@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <emmintrin.h>
 
 unsigned long long ncpus = 0;
 
@@ -82,8 +83,69 @@ void* calcPixelValue(void *arg) {
 
         // printf("threadID: %d    curHeight: %d\n", realThreadId, curHeight);
         double y0 = curHeight * y0Offset + lower;
-        for (int i = 0; i < width; ++i) {
-            double x0 = i * x0Offset + left;
+        // for (int i = 0; i < width; ++i) {
+        //     double x0 = i * x0Offset + left;
+
+        //     int repeats = 0;
+        //     double x = 0;
+        //     double y = 0;
+        //     double length_squared = 0;
+        //     while (repeats < iters && length_squared < 4) {
+        //         double temp = x * x - y * y + x0;
+        //         y = 2 * x * y + y0;
+        //         x = temp;
+        //         length_squared = x * x + y * y;
+        //         ++repeats;
+        //     }
+
+        //     image[curHeight * width + i] = repeats;
+        // }
+
+        int isEven = (width%2 == 0);
+        int SSEWidth = isEven ? width : width - 1;
+        const double threshold = 4.0;
+        // __m128d thresholdSse = _mm_set_pd(threshold, threshold);
+        const double yMul = 2.0;
+        __m128d yMulSse = _mm_set_pd(yMul, yMul);
+
+        __m128d y0Sse = _mm_set_pd(y0, y0);
+        for (int i=0; i<SSEWidth; i+=2) {
+            double x0_1 = i * x0Offset + left;
+            double x0_2 = (i+1) * x0Offset + left;
+            __m128d x0Sse = _mm_set_pd(x0_1, x0_2);
+
+            int repeats = 0;
+            double x1 = 0;
+            double x2 = 0;
+            double y1 = 0;
+            double y2 = 0;
+            double length_squared1 = 0;
+            double length_squared2 = 0;
+            __m128d lengthSquareSse = _mm_set_pd(length_squared1, length_squared2);
+            __m128d xSse = _mm_set_pd(x1, x2);
+            __m128d ySse = _mm_set_pd(y1, y2);
+
+            int repeats1 = -1;
+            int repeats2 = -1;
+            while (repeats < iters && (repeats1 == -1 || repeats2 == -1)) {
+                __m128d temp = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(xSse, xSse), _mm_mul_pd(ySse, ySse)), x0Sse);
+                ySse = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(yMulSse, xSse), ySse), y0Sse);
+                xSse = temp;
+                lengthSquareSse = _mm_add_pd(_mm_mul_pd(xSse, xSse),_mm_mul_pd(ySse, ySse));
+
+                length_squared1 = _mm_cvtsd_f64(_mm_unpackhi_pd(lengthSquareSse, lengthSquareSse));
+                if (length_squared1 > threshold && repeats1 == -1) repeats1 = repeats; 
+                length_squared2 = _mm_cvtsd_f64(lengthSquareSse);
+                if (length_squared2 > threshold && repeats2 == -1) repeats2 = repeats;
+                ++repeats;
+            }
+
+            image[curHeight * width + i] = repeats1;
+            image[curHeight * width + i + 1] = repeats2;
+        }
+
+        if (!isEven) {
+            double x0 = (width-1) * x0Offset + left;
 
             int repeats = 0;
             double x = 0;
@@ -97,7 +159,7 @@ void* calcPixelValue(void *arg) {
                 ++repeats;
             }
 
-            image[curHeight * width + i] = repeats;
+            image[curHeight * width + (width-1)] = repeats;
         }
     }
 

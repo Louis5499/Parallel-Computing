@@ -2,7 +2,7 @@ CC = gcc
 CXX = g++
 LDLIBS = -lpng
 CFLAGS = -lm -O3
-hw2a: CFLAGS += -pthread
+hw2a: CFLAGS += -pthread -march=native
 hw2b: CC = mpicc
 hw2b: CXX = mpicxx
 hw2b: CFLAGS += -fopenmp
