@@ -12,13 +12,6 @@
 
 unsigned long long ncpus = 0;
 
-// struct RunParams {
-//     int iters;
-//     int x0;
-//     int y0;
-//     int *outputValue;
-// };
-
 int iters = 0;
 int width = 0;
 int height = 0;
@@ -28,6 +21,7 @@ double left = 0.0;
 double right = 0.0;
 int* image = NULL;
 
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer) {
     FILE* fp = fopen(filename, "wb");
@@ -66,34 +60,47 @@ void write_png(const char* filename, int iters, int width, int height, const int
     fclose(fp);
 }
 
+int curHeightIndex = 0;
+int getHeightPosition() {
+    if (curHeightIndex < height) return curHeightIndex++;
+    else return -1;
+}
+
+double y0Offset = 0;
+double x0Offset = 0;
+
 void* calcPixelValue(void *arg) {
-    // int *threadid = static_cast<int*>(arg);
     int* threadid = (int*)arg;
     int realThreadId = *threadid;
-    // printf("thread: %d\n", realThreadId);
-    for (int j = 0; j < height; ++j) {
-        double y0 = j * ((upper - lower) / height) + lower;
-        for (int i = 0; i < width; ++i) {
-            int offset = j * width + i;
-            if (offset%realThreadId == 0) {
-                double x0 = i * ((right - left) / width) + left;
+    int curHeight = 0;
 
-                int repeats = 0;
-                double x = 0;
-                double y = 0;
-                double length_squared = 0;
-                double temp = 0;
-                while (repeats < iters && length_squared < 4) {
-                    temp = x * x - y * y + x0;
-                    y = 2 * x * y + y0;
-                    x = temp;
-                    length_squared = x * x + y * y;
-                    ++repeats;
-                }
-                image[offset] = repeats;
+    while(true) {
+        pthread_mutex_lock(&mutex);
+        curHeight = getHeightPosition();
+        pthread_mutex_unlock(&mutex);
+        if (curHeight == -1) break;
+
+        // printf("threadID: %d    curHeight: %d\n", realThreadId, curHeight);
+        double y0 = curHeight * y0Offset + lower;
+        for (int i = 0; i < width; ++i) {
+            double x0 = i * x0Offset + left;
+
+            int repeats = 0;
+            double x = 0;
+            double y = 0;
+            double length_squared = 0;
+            while (repeats < iters && length_squared < 4) {
+                double temp = x * x - y * y + x0;
+                y = 2 * x * y + y0;
+                x = temp;
+                length_squared = x * x + y * y;
+                ++repeats;
             }
+
+            image[curHeight * width + i] = repeats;
         }
     }
+
     return NULL;
 }
 
@@ -105,6 +112,8 @@ int main(int argc, char** argv) {
     printf("%d cpus available\n", CPU_COUNT(&cpu_set));
     pthread_t threads[ncpus];
     int ID[ncpus];
+
+    pthread_mutex_init(&mutex, 0);
 
     /* argument parsing */
     assert(argc == 9);
@@ -121,6 +130,9 @@ int main(int argc, char** argv) {
     image = (int*)malloc(width * height * sizeof(int));
     assert(image);
 
+    y0Offset = ((upper - lower) / height);
+    x0Offset = ((right - left) / width);
+
     /* mandelbrot set */
     for (int t=0;t<ncpus;t++) {
         ID[t] = t+1;
@@ -134,4 +146,7 @@ int main(int argc, char** argv) {
     /* draw and cleanup */
     write_png(filename, iters, width, height, image);
     free(image);
+
+    pthread_mutex_destroy(&mutex);
+	pthread_exit(NULL);
 }
