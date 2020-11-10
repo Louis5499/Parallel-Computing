@@ -70,6 +70,11 @@ int getHeightPosition() {
 double y0Offset = 0;
 double x0Offset = 0;
 
+union SsePacket {
+    __m128d sseNum;
+    double num[2];
+};
+
 void* calcPixelValue(void *arg) {
     int* threadid = (int*)arg;
     int realThreadId = *threadid;
@@ -104,39 +109,35 @@ void* calcPixelValue(void *arg) {
         int isEven = (width%2 == 0);
         int SSEWidth = isEven ? width : width - 1;
         const double threshold = 4.0;
-        // __m128d thresholdSse = _mm_set_pd(threshold, threshold);
         const double yMul = 2.0;
         __m128d yMulSse = _mm_set_pd(yMul, yMul);
-
         __m128d y0Sse = _mm_set_pd(y0, y0);
+
         for (int i=0; i<SSEWidth; i+=2) {
-            double x0_1 = i * x0Offset + left;
-            double x0_2 = (i+1) * x0Offset + left;
-            __m128d x0Sse = _mm_set_pd(x0_1, x0_2);
+            SsePacket x0;
+            x0.num[0] = i * x0Offset + left;
+            x0.num[1] = (i+1) * x0Offset + left;
 
             int repeats = 0;
-            double x1 = 0;
-            double x2 = 0;
-            double y1 = 0;
-            double y2 = 0;
-            double length_squared1 = 0;
-            double length_squared2 = 0;
-            __m128d lengthSquareSse = _mm_set_pd(length_squared1, length_squared2);
-            __m128d xSse = _mm_set_pd(x1, x2);
-            __m128d ySse = _mm_set_pd(y1, y2);
+            SsePacket x;
+            x.num[0] = 0;
+            x.num[1] = 0;
+            SsePacket y;
+            y.num[0] = 0;
+            y.num[1] = 0;
+            SsePacket length_square;
+            length_square.num[0] = 0;
+            length_square.num[1] = 0;
+            int repeats1 = 0;
+            int repeats2 = 0;
+            while (repeats < iters && (repeats1 == 0 || repeats2 == 0)) {
+                __m128d temp = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(x.sseNum, x.sseNum), _mm_mul_pd(y.sseNum, y.sseNum)), x0.sseNum);
+                y.sseNum = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(yMulSse, x.sseNum), y.sseNum), y0Sse);
+                x.sseNum = temp;
+                length_square.sseNum = _mm_add_pd(_mm_mul_pd(x.sseNum, x.sseNum),_mm_mul_pd(y.sseNum, y.sseNum));
 
-            int repeats1 = -1;
-            int repeats2 = -1;
-            while (repeats < iters && (repeats1 == -1 || repeats2 == -1)) {
-                __m128d temp = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(xSse, xSse), _mm_mul_pd(ySse, ySse)), x0Sse);
-                ySse = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(yMulSse, xSse), ySse), y0Sse);
-                xSse = temp;
-                lengthSquareSse = _mm_add_pd(_mm_mul_pd(xSse, xSse),_mm_mul_pd(ySse, ySse));
-
-                length_squared1 = _mm_cvtsd_f64(_mm_unpackhi_pd(lengthSquareSse, lengthSquareSse));
-                if (length_squared1 > threshold && repeats1 == -1) repeats1 = repeats; 
-                length_squared2 = _mm_cvtsd_f64(lengthSquareSse);
-                if (length_squared2 > threshold && repeats2 == -1) repeats2 = repeats;
+                if (length_square.num[0] >= threshold && repeats1 == 0) repeats1 = repeats + 1;
+                if (length_square.num[1] >= threshold && repeats2 == 0) repeats2 = repeats + 1;
                 ++repeats;
             }
 
