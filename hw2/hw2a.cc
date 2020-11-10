@@ -88,23 +88,6 @@ void* calcPixelValue(void *arg) {
 
         // printf("threadID: %d    curHeight: %d\n", realThreadId, curHeight);
         double y0 = curHeight * y0Offset + lower;
-        // for (int i = 0; i < width; ++i) {
-        //     double x0 = i * x0Offset + left;
-
-        //     int repeats = 0;
-        //     double x = 0;
-        //     double y = 0;
-        //     double length_squared = 0;
-        //     while (repeats < iters && length_squared < 4) {
-        //         double temp = x * x - y * y + x0;
-        //         y = 2 * x * y + y0;
-        //         x = temp;
-        //         length_squared = x * x + y * y;
-        //         ++repeats;
-        //     }
-
-        //     image[curHeight * width + i] = repeats;
-        // }
 
         int isEven = (width%2 == 0);
         int SSEWidth = isEven ? width : width - 1;
@@ -126,7 +109,7 @@ void* calcPixelValue(void *arg) {
         int widthIdx1 = 0;
         int widthIdx2 = 0;
 
-        while (!block[0] || !block[1]) {
+        while (!block[0] && !block[1]) {
             if (finish[0] || finish[1]) {
                 widthIdx++;
                 if (finish[0]) {
@@ -159,7 +142,7 @@ void* calcPixelValue(void *arg) {
                 // Check two situation:
                 // 1. block -> If one has finished his width calculation, the other hasn't. We need to block finish one to stop calculating back image array.
                 // 2. finish -> If two simultaneously finish their jobs, we need to be careful.
-                // Since only "one" would be distribute next iteration information, the other would not. Hence, we still need to check the current state is final state, or final state + 1 (不要的)。
+                // Since only "one" would be distribute next iteration information, the other would not. Hence, we still need to check the current state is final state, not final state + 1 (不要的)。
                 if (!block[0] && finish[0] == 0) {
                     image[curHeight * width + widthIdx1] = repeats1;
                     finish[0] = 1;
@@ -173,6 +156,28 @@ void* calcPixelValue(void *arg) {
                 }
                 if (widthIdx + 1 >= width) block[1] = 1;
             }
+        }
+
+        if (!finish[0]) {
+            while (repeats1 < iters && length_square.num[0] < 4) {
+                double temp = x.num[0] * x.num[0] - y.num[0] * y.num[0] + x0.num[0];
+                y.num[0] = 2 * x.num[0] * y.num[0] + y0;
+                x.num[0] = temp;
+                length_square.num[0] = x.num[0] * x.num[0] + y.num[0] * y.num[0];
+                ++repeats1;
+            }
+            image[curHeight * width + widthIdx1] = repeats1;
+        }
+
+        if (!finish[1]) {
+            while (repeats2 < iters && length_square.num[1] < 4) {
+                double temp = x.num[1] * x.num[1] - y.num[1] * y.num[1] + x0.num[1];
+                y.num[1] = 2 * x.num[1] * y.num[1] + y0;
+                x.num[1] = temp;
+                length_square.num[1] = x.num[1] * x.num[1] + y.num[1] * y.num[1];
+                ++repeats2;
+            }
+            image[curHeight * width + widthIdx2] = repeats2;
         }
     }
 
