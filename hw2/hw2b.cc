@@ -11,6 +11,7 @@
 #include <string.h>
 #include <omp.h>
 #include <mpi.h>
+#include <emmintrin.h>
 
 using namespace std;
 
@@ -51,6 +52,11 @@ void write_png(const char* filename, int iters, int width, int height, const int
     fclose(fp);
 }
 
+union SsePacket {
+    __m128d sseNum;
+    double num[2];
+};
+
 int main(int argc, char** argv) {
     /* detect how many CPUs are available */
     cpu_set_t cpu_set;
@@ -75,13 +81,13 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
 
     // Distribute Workloads with regard to Height 
-    int curHeight, avgHeight, modHeight = 0;
+    int curHeightNum, avgHeight, modHeight = 0;
     if (rank >= height) {
         avgHeight = 1;
     } else {
         modHeight = height%mpiSize;
         avgHeight = height/mpiSize;
-        curHeight = (rank < modHeight) ? avgHeight + 1 : avgHeight;
+        curHeightNum = (rank < modHeight) ? avgHeight + 1 : avgHeight;
     }
 
     /* allocate memory for image */
@@ -89,33 +95,109 @@ int main(int argc, char** argv) {
     int* image = (int*)malloc(imagesize * sizeof(int));
     assert(image);
 
-    int* curImage = (int *)malloc(width*curHeight * sizeof(int));
+    int* curImage = (int *)malloc(width*curHeightNum * sizeof(int));
 
     double y0Offset = ((upper - lower) / height);
     double x0Offset = ((right - left) / width);
 
-    // One node calculation
     #pragma omp parallel num_threads(ncpus)
     {
         #pragma omp for schedule(dynamic)
-        for (int heightIdx=0; heightIdx < curHeight; heightIdx++) {
-            int j = rank + mpiSize*heightIdx;
-            double y0 = j*y0Offset + lower;
+        for (int heightIdx=0; heightIdx < curHeightNum; heightIdx++) {
+            int curHeight = rank + mpiSize*heightIdx;
             int curImageIndex = heightIdx*width;
-            for (int i = 0; i < width; ++i) {
-                double x0 = i * x0Offset + left;
-                int repeats = 0;
-                double x = 0;
-                double y = 0;
-                double length_squared = 0;
-                while (repeats < iters && length_squared < 4) {
-                    double temp = x * x - y * y + x0;
-                    y = 2 * x * y + y0;
-                    x = temp;
-                    length_squared = x * x + y * y;
-                    ++repeats;
+
+            double y0 = curHeight * y0Offset + lower;
+
+            int isEven = (width%2 == 0);
+            int SSEWidth = isEven ? width : width - 1;
+            const double threshold = 4.0;
+            const double yMul = 2.0;
+            __m128d yMulSse = _mm_set_pd(yMul, yMul);
+            __m128d y0Sse = _mm_set_pd(y0, y0);
+
+            int finish[2] = {1, 1};
+            int block[2] = {0, 0};
+
+            int repeats1 = 0;
+            int repeats2 = 0;
+            SsePacket x0;
+            SsePacket x;
+            SsePacket y;
+            SsePacket length_square;
+            int widthIdx = -1;
+            int widthIdx1 = 0;
+            int widthIdx2 = 0;
+
+            while (!block[0] && !block[1]) {
+                if (finish[0] || finish[1]) {
+                    widthIdx++;
+                    if (finish[0]) {
+                        x0.num[0] =  widthIdx * x0Offset + left;
+                        x.num[0] = 0;
+                        y.num[0] = 0;
+                        length_square.num[0] = 0;
+                        repeats1 = 0;
+                        widthIdx1 = widthIdx;
+                        finish[0] = 0;
+                    } else if (finish[1]) {
+                        x0.num[1] =  widthIdx * x0Offset + left;
+                        x.num[1] = 0;
+                        y.num[1] = 0;
+                        length_square.num[1] = 0;
+                        repeats2 = 0;
+                        widthIdx2 = widthIdx;
+                        finish[1] = 0;
+                    }
                 }
-                curImage[curImageIndex + i] = repeats;
+
+                __m128d temp = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(x.sseNum, x.sseNum), _mm_mul_pd(y.sseNum, y.sseNum)), x0.sseNum);
+                y.sseNum = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(yMulSse, x.sseNum), y.sseNum), y0Sse);
+                x.sseNum = temp;
+                length_square.sseNum = _mm_add_pd(_mm_mul_pd(x.sseNum, x.sseNum),_mm_mul_pd(y.sseNum, y.sseNum));
+                ++repeats1;
+                ++repeats2;
+
+                if (length_square.num[0] >= threshold || repeats1 >= iters) {
+                    // Check two situation:
+                    // 1. block -> If one has finished his width calculation, the other hasn't. We need to block finish one to stop calculating back image array.
+                    // 2. finish -> If two simultaneously finish their jobs, we need to be careful.
+                    // Since only "one" would be distribute next iteration information, the other would not. Hence, we still need to check the current state is final state, not final state + 1 (不要的)。
+                    if (!block[0] && finish[0] == 0) {
+                        curImage[curImageIndex + widthIdx1] = repeats1;
+                        finish[0] = 1;
+                    }
+                    if (widthIdx + 1 >= width) block[0] = 1;
+                }
+                if (length_square.num[1] >= threshold || repeats2 >= iters) {
+                    if (!block[1] && finish[1] == 0) {
+                        curImage[curImageIndex + widthIdx2] = repeats2;
+                        finish[1] = 1;
+                    }
+                    if (widthIdx + 1 >= width) block[1] = 1;
+                }
+            }
+
+            if (!finish[0]) {
+                while (repeats1 < iters && length_square.num[0] < 4) {
+                    double temp = x.num[0] * x.num[0] - y.num[0] * y.num[0] + x0.num[0];
+                    y.num[0] = 2 * x.num[0] * y.num[0] + y0;
+                    x.num[0] = temp;
+                    length_square.num[0] = x.num[0] * x.num[0] + y.num[0] * y.num[0];
+                    ++repeats1;
+                }
+                curImage[curImageIndex + widthIdx1] = repeats1;
+            }
+
+            if (!finish[1]) {
+                while (repeats2 < iters && length_square.num[1] < 4) {
+                    double temp = x.num[1] * x.num[1] - y.num[1] * y.num[1] + x0.num[1];
+                    y.num[1] = 2 * x.num[1] * y.num[1] + y0;
+                    x.num[1] = temp;
+                    length_square.num[1] = x.num[1] * x.num[1] + y.num[1] * y.num[1];
+                    ++repeats2;
+                }
+                curImage[curImageIndex + widthIdx2] = repeats2;
             }
         }
     }
@@ -123,39 +205,37 @@ int main(int argc, char** argv) {
     int* revcount = (int*)malloc(mpiSize*sizeof(int));
     int* displs = (int*)malloc(mpiSize*sizeof(int));
     displs[0] = 0;
-    for(int i=0;i<mpiSize;++i){
-      if (i<modHeight){
+    for(int i=0; i<mpiSize; i++){
+      if (i < modHeight){
         revcount[i] = (avgHeight+1)*width;
-        if(i+1<mpiSize) displs[i+1] = displs[i] + revcount[i];
+        if(i+1 < mpiSize) displs[i+1] = displs[i] + revcount[i];
       }
       else {
         revcount[i] = avgHeight*width;
-        if(i+1<mpiSize) displs[i+1] = displs[i] + revcount[i];
+        if(i+1 < mpiSize) displs[i+1] = displs[i] + revcount[i];
       }
     }
-    MPI_Gatherv(curImage, curHeight*width, MPI_INT, image, revcount, displs, MPI_INT, 0, MPI_COMM_WORLD);
-    // // TODO: 因為一開始分配是縱向分配，導致需要再轉換。可改成一開始就橫向分配，也許效果較好。
-    if(rank==0){
-        /* index handle*/
-        int* ans_image = (int*)malloc(imagesize * sizeof(int));
+    MPI_Gatherv(curImage, curHeightNum*width, MPI_INT, image, revcount, displs, MPI_INT, 0, MPI_COMM_WORLD);
+    // 因為一開始分配是縱向分配，導致需要再轉換。可改成一開始就橫向分配，也許效果較好。
+    if(rank==0) {
+        int* ansImage = (int*)malloc(imagesize * sizeof(int));
         int index = 0;
-        for(int i=0;i<curHeight;i++){
-            int ri = 0;
-            int jplus = curHeight;
-            for(int j=i;j<height && index < imagesize ;j+=jplus){
+        for(int i=0;i<curHeightNum;i++){
+            int realHeightIdx = 0;
+            int jumpOffset = curHeightNum;
+            for(int j=i; j<height && index < imagesize; j+=jumpOffset){
                 int w0 = j*width;
                 for(int w=0;w<width;w++){
-                    ans_image[index] = image[w0 + w];
+                    ansImage[index] = image[w0 + w];
                     index++;
                 }
-                if(ri <modHeight)jplus = curHeight;
-                else jplus = avgHeight;
-                ri++;
+                if(realHeightIdx < modHeight) jumpOffset = curHeightNum;
+                else jumpOffset = avgHeight;
+                realHeightIdx++;
             }
         }
-        /* draw and cleanup */
-        write_png(filename, iters, width, height, ans_image);
-        free(ans_image);
+        write_png(filename, iters, width, height, ansImage);
+        free(ansImage);
     }
 
     /* draw and cleanup */

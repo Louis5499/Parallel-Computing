@@ -88,6 +88,23 @@ void* calcPixelValue(void *arg) {
 
         // printf("threadID: %d    curHeight: %d\n", realThreadId, curHeight);
         double y0 = curHeight * y0Offset + lower;
+        // for (int i = 0; i < width; ++i) {
+        //     double x0 = i * x0Offset + left;
+
+        //     int repeats = 0;
+        //     double x = 0;
+        //     double y = 0;
+        //     double length_squared = 0;
+        //     while (repeats < iters && length_squared < 4) {
+        //         double temp = x * x - y * y + x0;
+        //         y = 2 * x * y + y0;
+        //         x = temp;
+        //         length_squared = x * x + y * y;
+        //         ++repeats;
+        //     }
+
+        //     image[curHeight * width + i] = repeats;
+        // }
 
         int isEven = (width%2 == 0);
         int SSEWidth = isEven ? width : width - 1;
@@ -96,88 +113,54 @@ void* calcPixelValue(void *arg) {
         __m128d yMulSse = _mm_set_pd(yMul, yMul);
         __m128d y0Sse = _mm_set_pd(y0, y0);
 
-        int finish[2] = {1, 1};
-        int block[2] = {0, 0};
+        for (int i=0; i<SSEWidth; i+=2) {
+            SsePacket x0;
+            x0.num[0] = i * x0Offset + left;
+            x0.num[1] = (i+1) * x0Offset + left;
 
-        int repeats1 = 0;
-        int repeats2 = 0;
-        SsePacket x0;
-        SsePacket x;
-        SsePacket y;
-        SsePacket length_square;
-        int widthIdx = -1;
-        int widthIdx1 = 0;
-        int widthIdx2 = 0;
+            int repeats = 0;
+            SsePacket x;
+            x.num[0] = 0;
+            x.num[1] = 0;
+            SsePacket y;
+            y.num[0] = 0;
+            y.num[1] = 0;
+            SsePacket length_square;
+            length_square.num[0] = 0;
+            length_square.num[1] = 0;
+            int repeats1 = 0;
+            int repeats2 = 0;
+            while (repeats < iters && (repeats1 == 0 || repeats2 == 0)) {
+                __m128d temp = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(x.sseNum, x.sseNum), _mm_mul_pd(y.sseNum, y.sseNum)), x0.sseNum);
+                y.sseNum = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(yMulSse, x.sseNum), y.sseNum), y0Sse);
+                x.sseNum = temp;
+                length_square.sseNum = _mm_add_pd(_mm_mul_pd(x.sseNum, x.sseNum),_mm_mul_pd(y.sseNum, y.sseNum));
 
-        while (!block[0] && !block[1]) {
-            if (finish[0] || finish[1]) {
-                widthIdx++;
-                if (finish[0]) {
-                    x0.num[0] =  widthIdx * x0Offset + left;
-                    x.num[0] = 0;
-                    y.num[0] = 0;
-                    length_square.num[0] = 0;
-                    repeats1 = 0;
-                    widthIdx1 = widthIdx;
-                    finish[0] = 0;
-                } else if (finish[1]) {
-                    x0.num[1] =  widthIdx * x0Offset + left;
-                    x.num[1] = 0;
-                    y.num[1] = 0;
-                    length_square.num[1] = 0;
-                    repeats2 = 0;
-                    widthIdx2 = widthIdx;
-                    finish[1] = 0;
-                }
+                if (length_square.num[0] >= threshold && repeats1 == 0) repeats1 = repeats + 1;
+                if (length_square.num[1] >= threshold && repeats2 == 0) repeats2 = repeats + 1;
+                ++repeats;
             }
 
-            __m128d temp = _mm_add_pd(_mm_sub_pd(_mm_mul_pd(x.sseNum, x.sseNum), _mm_mul_pd(y.sseNum, y.sseNum)), x0.sseNum);
-            y.sseNum = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(yMulSse, x.sseNum), y.sseNum), y0Sse);
-            x.sseNum = temp;
-            length_square.sseNum = _mm_add_pd(_mm_mul_pd(x.sseNum, x.sseNum),_mm_mul_pd(y.sseNum, y.sseNum));
-            ++repeats1;
-            ++repeats2;
-
-            if (length_square.num[0] >= threshold || repeats1 >= iters) {
-                // Check two situation:
-                // 1. block -> If one has finished his width calculation, the other hasn't. We need to block finish one to stop calculating back image array.
-                // 2. finish -> If two simultaneously finish their jobs, we need to be careful.
-                // Since only "one" would be distribute next iteration information, the other would not. Hence, we still need to check the current state is final state, not final state + 1 (不要的)。
-                if (!block[0] && finish[0] == 0) {
-                    image[curHeight * width + widthIdx1] = repeats1;
-                    finish[0] = 1;
-                }
-                if (widthIdx + 1 >= width) block[0] = 1;
-            }
-            if (length_square.num[1] >= threshold || repeats2 >= iters) {
-                if (!block[1] && finish[1] == 0) {
-                    image[curHeight * width + widthIdx2] = repeats2;
-                    finish[1] = 1;
-                }
-                if (widthIdx + 1 >= width) block[1] = 1;
-            }
+            image[curHeight * width + i] = repeats1;
+            image[curHeight * width + i + 1] = repeats2;
         }
 
-        if (!finish[0]) {
-            while (repeats1 < iters && length_square.num[0] < 4) {
-                double temp = x.num[0] * x.num[0] - y.num[0] * y.num[0] + x0.num[0];
-                y.num[0] = 2 * x.num[0] * y.num[0] + y0;
-                x.num[0] = temp;
-                length_square.num[0] = x.num[0] * x.num[0] + y.num[0] * y.num[0];
-                ++repeats1;
-            }
-            image[curHeight * width + widthIdx1] = repeats1;
-        }
+        if (!isEven) {
+            double x0 = (width-1) * x0Offset + left;
 
-        if (!finish[1]) {
-            while (repeats2 < iters && length_square.num[1] < 4) {
-                double temp = x.num[1] * x.num[1] - y.num[1] * y.num[1] + x0.num[1];
-                y.num[1] = 2 * x.num[1] * y.num[1] + y0;
-                x.num[1] = temp;
-                length_square.num[1] = x.num[1] * x.num[1] + y.num[1] * y.num[1];
-                ++repeats2;
+            int repeats = 0;
+            double x = 0;
+            double y = 0;
+            double length_squared = 0;
+            while (repeats < iters && length_squared < 4) {
+                double temp = x * x - y * y + x0;
+                y = 2 * x * y + y0;
+                x = temp;
+                length_squared = x * x + y * y;
+                ++repeats;
             }
-            image[curHeight * width + widthIdx2] = repeats2;
+
+            image[curHeight * width + (width-1)] = repeats;
         }
     }
 
