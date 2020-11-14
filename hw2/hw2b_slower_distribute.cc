@@ -89,6 +89,10 @@ int main(int argc, char** argv) {
         avgHeight = height/mpiSize;
         curHeightNum = (rank < modHeight) ? avgHeight + 1 : avgHeight;
     }
+    int frontPadding = 0;
+    for (int i=0;i<rank;i++) {
+        frontPadding += (i < modHeight) ? avgHeight + 1 : avgHeight;
+    }
 
     /* allocate memory for image */
     int imagesize = width * height;
@@ -104,7 +108,7 @@ int main(int argc, char** argv) {
     {
         #pragma omp for schedule(dynamic)
         for (int heightIdx=0; heightIdx < curHeightNum; heightIdx++) {
-            int curHeight = rank + mpiSize*heightIdx;
+            int curHeight = frontPadding + heightIdx;
             int curImageIndex = heightIdx*width;
 
             double y0 = curHeight * y0Offset + lower;
@@ -216,26 +220,27 @@ int main(int argc, char** argv) {
       }
     }
     MPI_Gatherv(curImage, curHeightNum*width, MPI_INT, image, revcount, displs, MPI_INT, 0, MPI_COMM_WORLD);
-    // 因為一開始分配是縱向分配，需要再轉換。
+    // 因為一開始分配是縱向分配，導致需要再轉換。可改成一開始就橫向分配，也許效果較好。
     if(rank==0) {
-        int* ansImage = (int*)malloc(imagesize * sizeof(int));
-        int index = 0;
-        for(int i=0;i<curHeightNum;i++){
-            int realHeightIdx = 0;
-            int jumpOffset = curHeightNum;
-            for(int j=i; j<height && index < imagesize; j+=jumpOffset){
-                int w0 = j*width;
-                for(int w=0;w<width;w++){
-                    ansImage[index] = image[w0 + w];
-                    index++;
-                }
-                if(realHeightIdx < modHeight) jumpOffset = curHeightNum;
-                else jumpOffset = avgHeight;
-                realHeightIdx++;
-            }
-        }
-        write_png(filename, iters, width, height, ansImage);
-        free(ansImage);
+        // int* ansImage = (int*)malloc(imagesize * sizeof(int));
+        // int index = 0;
+        // for(int i=0;i<curHeightNum;i++){
+        //     int realHeightIdx = 0;
+        //     int jumpOffset = curHeightNum;
+        //     for(int j=i; j<height && index < imagesize; j+=jumpOffset){
+        //         int w0 = j*width;
+        //         for(int w=0;w<width;w++){
+        //             ansImage[index] = image[w0 + w];
+        //             index++;
+        //         }
+        //         if(realHeightIdx < modHeight) jumpOffset = curHeightNum;
+        //         else jumpOffset = avgHeight;
+        //         realHeightIdx++;
+        //     }
+        // }
+        // write_png(filename, iters, width, height, ansImage);
+        // free(ansImage);
+        write_png(filename, iters, width, height, image);
     }
 
     /* draw and cleanup */
@@ -245,3 +250,6 @@ int main(int argc, char** argv) {
     MPI_Finalize();
     return 0;
 }
+
+
+// TODO: use MPI OPEN FILE TO PARALLELLY WRITE DATA

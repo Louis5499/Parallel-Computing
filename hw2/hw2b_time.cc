@@ -13,6 +13,21 @@
 #include <mpi.h>
 #include <emmintrin.h>
 
+// initialize time measurement
+struct timespec start, end_time;
+double compute_time=0.0, io_time=0.0, comm_time=0.0;
+double heightestComputeTime = 0.0;
+double lowestComputeTime = 999.0;
+
+double timeDiff(struct timespec start, struct timespec end){
+    // function used to measure time in nano resolution
+    float output;
+    float nano = 1000000000.0;
+    if(end.tv_nsec < start.tv_nsec) output = ((end.tv_sec - start.tv_sec -1)+(nano+end.tv_nsec-start.tv_nsec)/nano);
+    else output = ((end.tv_sec - start.tv_sec)+(end.tv_nsec-start.tv_nsec)/nano);
+    return output;
+}
+
 using namespace std;
 
 void write_png(const char* filename, int iters, int width, int height, const int* buffer) {
@@ -104,6 +119,7 @@ int main(int argc, char** argv) {
     {
         #pragma omp for schedule(dynamic)
         for (int heightIdx=0; heightIdx < curHeightNum; heightIdx++) {
+            clock_gettime(CLOCK_MONOTONIC, &start); // S---------------------------------------------------------------------------------
             int curHeight = rank + mpiSize*heightIdx;
             int curImageIndex = heightIdx*width;
 
@@ -199,8 +215,18 @@ int main(int argc, char** argv) {
                 }
                 curImage[curImageIndex + widthIdx2] = repeats2;
             }
+            clock_gettime(CLOCK_MONOTONIC, &end_time); // S---------------------------------------------------------------------------------
+            compute_time += timeDiff(start, end_time);
         }
     }
+
+    // For Time
+    double avgTime = 0.0;
+    MPI_Reduce(&compute_time, &heightestComputeTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&compute_time, &lowestComputeTime, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&compute_time, &avgTime, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    avgTime/=mpiSize;
+    // -------
 
     int* revcount = (int*)malloc(mpiSize*sizeof(int));
     int* displs = (int*)malloc(mpiSize*sizeof(int));
@@ -215,9 +241,13 @@ int main(int argc, char** argv) {
         if(i+1 < mpiSize) displs[i+1] = displs[i] + revcount[i];
       }
     }
+    clock_gettime(CLOCK_MONOTONIC, &start); // S---------------------------------------------------------------------------------
     MPI_Gatherv(curImage, curHeightNum*width, MPI_INT, image, revcount, displs, MPI_INT, 0, MPI_COMM_WORLD);
+    clock_gettime(CLOCK_MONOTONIC, &end_time); // S---------------------------------------------------------------------------------
+    comm_time += timeDiff(start, end_time);
     // 因為一開始分配是縱向分配，需要再轉換。
     if(rank==0) {
+        clock_gettime(CLOCK_MONOTONIC, &start); // S---------------------------------------------------------------------------------
         int* ansImage = (int*)malloc(imagesize * sizeof(int));
         int index = 0;
         for(int i=0;i<curHeightNum;i++){
@@ -236,6 +266,11 @@ int main(int argc, char** argv) {
         }
         write_png(filename, iters, width, height, ansImage);
         free(ansImage);
+        clock_gettime(CLOCK_MONOTONIC, &end_time); // S---------------------------------------------------------------------------------
+        io_time += timeDiff(start, end_time);
+
+        printf("comm_time: %f\nio_time: %f\ncompute_time: %f\n", comm_time, io_time, compute_time);
+        printf("avg: %f\nlargest: %f\nlowest: %f\n", avgTime, heightestComputeTime, lowestComputeTime);
     }
 
     /* draw and cleanup */
