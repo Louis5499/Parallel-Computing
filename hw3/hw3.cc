@@ -1,4 +1,7 @@
 // C++ Program for Floyd Warshall Algorithm  
+// Finding:
+// 1. Don't allocate 1d array to store values, use vector: 69s ->47s
+// 2. Don't use OpenMP, it would be slower.
 #include <bits/stdc++.h> 
 #include <omp.h>
 #include <pthread.h>
@@ -6,6 +9,8 @@ using namespace std;
 
 #define INF 99999
 pthread_barrier_t barr;
+
+using namespace std;
 
 std::runtime_error reprintf(const char* fmt, ...) {
     va_list ap;
@@ -19,20 +24,20 @@ std::runtime_error reprintf(const char* fmt, ...) {
 }
 
 int V = 0, ncpus;
-int* dist = NULL;
+vector<vector<int>> dist;
 
 void* calculate(void *arg) {
   int* threadid = (int*)arg;
   int realThreadId = *threadid;
 
-  int i_lower = V * realThreadId / ncpus;
-  int i_upper = V * (realThreadId + 1) / ncpus;
+  int iLower = V * realThreadId / ncpus;
+  int iUpper = V * (realThreadId + 1) / ncpus;
 
   for (int k=0; k < V; k++) {
-    for (int i = i_lower; i < i_upper; i++) {
+    for (int i = iLower; i < iUpper; i++) {
       for (int j = 0; j < V; j++) {
-        if (dist[i*V + k] + dist[k*V + j] < dist[i*V + j]) {
-          dist[i*V + j] = dist[i*V + k] + dist[k*V + j];
+        if (dist[i][k] + dist[k][j] < dist[i][j]) {
+          dist[i][j] = dist[i][k] + dist[k][j];
         }
       }
     }
@@ -63,19 +68,20 @@ int main(int argc, char** argv) {
   f.read((char*)&E, sizeof E);
   // printf("E = %d\n", E);
 
-  dist = new int[V*V];
+  vector<int> row;
+  row.assign(V, 0);//配置一個 row 的大小
+  dist.assign(V, row);
   for (int i=0;i<V;i++) {
     for (int j=0;j<V;j++) {
-      int index = i*V+j;
-      if (i == j) dist[index] = 0;
-      else dist[index] = INF;
+      if (i == j) dist[i][j] = 0;
+      else dist[i][j] = INF;
     }
   }
 
   for (int i = 0; i < E; i++) {
     int e[3];
     f.read((char*)e, sizeof e);
-    dist[e[0] * V + e[1]] = e[2];
+    dist[e[0]][e[1]] = e[2];
   }
 
   pthread_t threads[ncpus];
@@ -102,7 +108,7 @@ int main(int argc, char** argv) {
   std::ofstream fout(argv[2]);
   for(int i=0; i<V; i++){
     for(int j=0; j<V; j++){
-        fout.write((char*)(dist + i*V + j), sizeof(int));
+        fout.write((char *)(&dist[i][j]), sizeof(int));
     }
   }
   fout.close();
