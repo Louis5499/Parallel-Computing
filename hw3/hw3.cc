@@ -46,8 +46,7 @@ void* calculate(void *arg) {
 
   return NULL;
 }
-  
-// Driver code  
+
 int main(int argc, char** argv) {
   /* detect how many CPUs are available */
   cpu_set_t cpu_set;
@@ -69,13 +68,10 @@ int main(int argc, char** argv) {
   // printf("E = %d\n", E);
 
   vector<int> row;
-  row.assign(V, 0);//配置一個 row 的大小
+  row.assign(V, INF);//配置一個 row 的大小
   dist.assign(V, row);
-  for (int i=0;i<V;i++) {
-    for (int j=0;j<V;j++) {
-      if (i == j) dist[i][j] = 0;
-      else dist[i][j] = INF;
-    }
+  for (int j=0;j<V;j++) {
+    dist[j][j] = 0;
   }
 
   for (int i = 0; i < E; i++) {
