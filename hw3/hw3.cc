@@ -34,6 +34,7 @@ void* calculate(void *arg) {
   int iUpper = V * (realThreadId + 1) / ncpus;
 
   for (int k=0; k < V; k++) {
+    // For Locality
     for (int i = iLower; i < iUpper; i++) {
       for (int j = 0; j < V; j++) {
         if (dist[i][k] + dist[k][j] < dist[i][j]) {
