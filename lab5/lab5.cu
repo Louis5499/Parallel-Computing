@@ -102,50 +102,96 @@ inline __device__ int bound_check(int val, int lower, int upper) {
 
 __global__ void sobel(unsigned char *s, unsigned char *t, unsigned height, unsigned width, unsigned channels) {
 
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    double val[Z][3];
-    if (tid >= height) return;
+    // int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    float val[Z][3];
+    __shared__ unsigned char RMat[5][262];
+    __shared__ unsigned char GMat[5][262];
+    __shared__ unsigned char BMat[5][262];
+    // if (tid >= height) return;
 
-    int y = tid;
-    for (int x = 0; x < width; ++x) {
-        /* Z axis of mask */
-        for (int i = 0; i < Z; ++i) {
-
-            val[i][2] = 0.;
-            val[i][1] = 0.;
-            val[i][0] = 0.;
-
+    // int y = tid;
+    for (int y = blockIdx.x; y < height; y += gridDim.x) {
+        for (int x = threadIdx.x; x < width; x += blockDim.x) {
+        // for (int x = 0; x < width; ++x) {
+            /* Z axis of mask */
             /* Y and X axis of mask */
             for (int v = -yBound; v <= yBound; ++v) {
-                for (int u = -xBound; u <= xBound; ++u) {
-                    if (bound_check(x + u, 0, width) && bound_check(y + v, 0, height)) {
-                        const unsigned char R = s[channels * (width * (y + v) + (x + u)) + 2];
-                        const unsigned char G = s[channels * (width * (y + v) + (x + u)) + 1];
-                        const unsigned char B = s[channels * (width * (y + v) + (x + u)) + 0];
-                        val[i][2] += R * mask[i][u + xBound][v + yBound];
-                        val[i][1] += G * mask[i][u + xBound][v + yBound];
-                        val[i][0] += B * mask[i][u + xBound][v + yBound];
+                if (bound_check(y + v, 0, height)) {
+                    // FIXME: 目前這份 code 跑得過，只有在 threadNum 設成 64 的時候。
+                    // 當我 threadNum 設成 256 時，當每個 blockIdx 進入第二次輪迴（blockIdx.x + gridDim.x）， x_row threadIdx.x 為 64 的地方都會出錯。
+                    // 我強制設定為 threadNum 為 64，避免上述情況發生，但應該還是要 de 出來。
+                    RMat[v+yBound][threadIdx.x + 2] = s[channels * (width * (y + v) + x) + 2];
+                    GMat[v+yBound][threadIdx.x + 2] = s[channels * (width * (y + v) + x) + 1];
+                    BMat[v+yBound][threadIdx.x + 2] = s[channels * (width * (y + v) + x) + 0];
+                    if (threadIdx.x == 0) {
+                        if (bound_check(x - 2, 0, width)) {
+                            RMat[v+yBound][threadIdx.x] = s[channels * (width * (y + v) + x-2) + 2];
+                            GMat[v+yBound][threadIdx.x] = s[channels * (width * (y + v) + x-2) + 1];
+                            BMat[v+yBound][threadIdx.x] = s[channels * (width * (y + v) + x-2) + 0];
+                        }
+                        if (bound_check(x - 1, 0, width)) {
+                            RMat[v+yBound][threadIdx.x + 1] = s[channels * (width * (y + v) + x-1) + 2];
+                            GMat[v+yBound][threadIdx.x + 1] = s[channels * (width * (y + v) + x-1) + 1];
+                            BMat[v+yBound][threadIdx.x + 1] = s[channels * (width * (y + v) + x-1) + 0];
+                        }
+                    } else if (threadIdx.x == blockDim.x - 1) {
+                        if (bound_check(x + 1, 0, width)) {
+                            RMat[v+yBound][threadIdx.x + 3] = s[channels * (width * (y + v) + x+1) + 2];
+                            GMat[v+yBound][threadIdx.x + 3] = s[channels * (width * (y + v) + x+1) + 1];
+                            BMat[v+yBound][threadIdx.x + 3] = s[channels * (width * (y + v) + x+1) + 0];
+                        }
+                        if (bound_check(x + 2, 0, width)) {
+                            RMat[v+yBound][threadIdx.x + 4] = s[channels * (width * (y + v) + x+2) + 2];
+                            GMat[v+yBound][threadIdx.x + 4] = s[channels * (width * (y + v) + x+2) + 1];
+                            BMat[v+yBound][threadIdx.x + 4] = s[channels * (width * (y + v) + x+2) + 0];
+                        }
                     }
                 }
             }
+            __syncthreads();
+
+            for (int i = 0; i < Z; ++i) {
+
+                val[i][2] = 0.;
+                val[i][1] = 0.;
+                val[i][0] = 0.;
+
+                /* Y and X axis of mask */
+                for (int v = -yBound; v <= yBound; ++v) {
+                    for (int u = -xBound; u <= xBound; ++u) {
+                        if (bound_check(x + u, 0, width) && bound_check(y + v, 0, height)) {
+                            // const unsigned char R = s[channels * (width * (y + v) + (x + u)) + 2];
+                            // const unsigned char G = s[channels * (width * (y + v) + (x + u)) + 1];
+                            // const unsigned char B = s[channels * (width * (y + v) + (x + u)) + 0];
+                            const unsigned char R = RMat[v+yBound][threadIdx.x + 2 + u];
+                            const unsigned char G = GMat[v+yBound][threadIdx.x + 2 + u];
+                            const unsigned char B = BMat[v+yBound][threadIdx.x + 2 + u];
+                            val[i][2] += R * mask[i][u + xBound][v + yBound];
+                            val[i][1] += G * mask[i][u + xBound][v + yBound];
+                            val[i][0] += B * mask[i][u + xBound][v + yBound];
+                        }
+                    }
+                }
+            }
+            float totalR = 0.;
+            float totalG = 0.;
+            float totalB = 0.;
+            for (int i = 0; i < Z; ++i) {
+                totalR += val[i][2] * val[i][2];
+                totalG += val[i][1] * val[i][1];
+                totalB += val[i][0] * val[i][0];
+            }
+            totalR = sqrt(totalR) / SCALE;
+            totalG = sqrt(totalG) / SCALE;
+            totalB = sqrt(totalB) / SCALE;
+            const unsigned char cR = (totalR > 255.) ? 255 : totalR;
+            const unsigned char cG = (totalG > 255.) ? 255 : totalG;
+            const unsigned char cB = (totalB > 255.) ? 255 : totalB;
+            t[channels * (width * y + x) + 2] = cR;
+            t[channels * (width * y + x) + 1] = cG;
+            t[channels * (width * y + x) + 0] = cB;
+            __syncthreads();
         }
-        double totalR = 0.;
-        double totalG = 0.;
-        double totalB = 0.;
-        for (int i = 0; i < Z; ++i) {
-            totalR += val[i][2] * val[i][2];
-            totalG += val[i][1] * val[i][1];
-            totalB += val[i][0] * val[i][0];
-        }
-        totalR = sqrt(totalR) / SCALE;
-        totalG = sqrt(totalG) / SCALE;
-        totalB = sqrt(totalB) / SCALE;
-        const unsigned char cR = (totalR > 255.) ? 255 : totalR;
-        const unsigned char cG = (totalG > 255.) ? 255 : totalG;
-        const unsigned char cB = (totalB > 255.) ? 255 : totalB;
-        t[channels * (width * y + x) + 2] = cR;
-        t[channels * (width * y + x) + 1] = cG;
-        t[channels * (width * y + x) + 0] = cB;
     }
 }
 
@@ -172,11 +218,12 @@ int main(int argc, char **argv) {
     cudaMemcpy(dsrc, src, height * width * channels * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
     // decide to use how many blocks and threads
-    const int num_threads = 256;
-    const int num_blocks = height / num_threads + 1;
+    const int num_threads = 64;
+    // const int num_blocks = height / num_threads + 1;
+    const int num_blocks = 2048;
 
     // launch cuda kernel
-    sobel << <num_blocks, num_threads>>> (dsrc, ddst, height, width, channels);
+    sobel <<<num_blocks, num_threads>>> (dsrc, ddst, height, width, channels);
 
     // cudaMemcpy(...) copy result image to host
     cudaMemcpy(dst, ddst, height * width * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
