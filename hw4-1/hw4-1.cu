@@ -103,15 +103,16 @@ void block_FW(int B) {
 }
 
 
-inline __device__ void BlockCalc(int* C, int* A, int* B, int bj, int bi) {
+inline __device__ void BlockCalc(int* C, int* A, int* B, int innerJ, int innerI) {
+    #pragma unroll
     for (int k = 0; k < BLOCK_SIZE; k++) {
-      int sum = A[bi*BLOCK_SIZE + k] + B[k*BLOCK_SIZE + bj];
-    //   printf("New Added Element[%d][%d]: %d   Element[%d][%d]: %d  Combine Value: %d | Original Value: %d\n", bi, k, A[bi*BLOCK_SIZE + k], k, bj, B[k*BLOCK_SIZE + bj], sum, C[bi*BLOCK_SIZE + bj]);
-      if (C[bi*BLOCK_SIZE + bj] > sum) {
-        C[bi*BLOCK_SIZE + bj] = sum;
+      int sum = A[innerI*BLOCK_SIZE + k] + B[k*BLOCK_SIZE + innerJ];
+      if (C[innerI*BLOCK_SIZE + innerJ] > sum) {
+        C[innerI*BLOCK_SIZE + innerJ] = sum;
       }
       __syncthreads();
     }
+    //   printf("New Added Element[%d][%d]: %d   Element[%d][%d]: %d  Combine Value: %d | Original Value: %d\n", bi, k, A[bi*BLOCK_SIZE + k], k, bj, B[k*BLOCK_SIZE + bj], sum, C[bi*BLOCK_SIZE + bj]);
   }
 
 __global__ void Phase1(int *dist, int Round, int n) {
@@ -137,42 +138,33 @@ __global__ void Phase2(int *dist, int Round, int n) {
     const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int diagonalOffset = BLOCK_SIZE * Round;
-  
+
+    __shared__ int Diagonal[BLOCK_SIZE * BLOCK_SIZE];
     __shared__ int A[BLOCK_SIZE * BLOCK_SIZE];
     __shared__ int B[BLOCK_SIZE * BLOCK_SIZE];
-    __shared__ int C[BLOCK_SIZE * BLOCK_SIZE];
   
-    C[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
-    B[innerI*BLOCK_SIZE + innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
-  
-    __syncthreads();
-  
-    BlockCalc(C, C, B, innerI, innerJ);
+    A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
+    B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ];
+    Diagonal[innerI*BLOCK_SIZE + innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
   
     __syncthreads();
   
-    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = C[innerI*BLOCK_SIZE + innerJ];
-  
-    C[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ];
-    A[innerI*BLOCK_SIZE + innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
-  
+    BlockCalc(A, A, Diagonal, innerI, innerJ);
+    BlockCalc(B, Diagonal, B, innerI, innerJ);
+
     __syncthreads();
   
-    BlockCalc(C, A, C, innerI, innerJ);
-  
-    __syncthreads();
-  
-    // Block C is the only one that could be changed
-    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ] = C[innerI*BLOCK_SIZE + innerJ];
+    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = A[innerI*BLOCK_SIZE + innerJ];
+    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ] = B[innerI*BLOCK_SIZE + innerJ];
 }
 
 __global__ void Phase3(int *dist, int Round, int n) {
-    const unsigned int j = blockIdx.x;
-    const unsigned int i = blockIdx.y;
+    const int j = blockIdx.x;
+    const int i = blockIdx.y;
     if (i == Round && j == Round) return;
 
-    const unsigned int innerI = threadIdx.y;
-    const unsigned int innerJ = threadIdx.x;
+    const int innerI = threadIdx.y;
+    const int innerJ = threadIdx.x;
 
     __shared__ int A[BLOCK_SIZE * BLOCK_SIZE];
     __shared__ int B[BLOCK_SIZE * BLOCK_SIZE];
