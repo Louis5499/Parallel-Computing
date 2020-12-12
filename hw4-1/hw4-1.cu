@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <iostream>
 #include <cuda_runtime.h>
-#define BLOCK_SIZE 32
+#define BLOCK_SIZE 64
 
 using namespace std;
 
@@ -81,7 +81,7 @@ void block_FW(int B) {
 	cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
 
     const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    dim3 block_dim(BLOCK_SIZE, BLOCK_SIZE, 1);
+    dim3 block_dim(BLOCK_SIZE, 1, 1);
     dim3 grid_dim(blocks, blocks, 1);
 
     int round = ceil(n, B);
@@ -103,20 +103,21 @@ void block_FW(int B) {
 }
 
 
-inline __device__ void BlockCalc(int* C, int* A, int* B, int innerJ, int innerI) {
-    #pragma unroll
+inline __device__ void BlockCalc(int* C, int* A, int* B, int innerJ) {
     for (int k = 0; k < BLOCK_SIZE; k++) {
-      int sum = A[innerI*BLOCK_SIZE + k] + B[k*BLOCK_SIZE + innerJ];
-      if (C[innerI*BLOCK_SIZE + innerJ] > sum) {
-        C[innerI*BLOCK_SIZE + innerJ] = sum;
-      }
-      __syncthreads();
+        for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
+            int sum = A[innerI*BLOCK_SIZE + k] + B[k*BLOCK_SIZE + innerJ];
+            if (C[innerI*BLOCK_SIZE + innerJ] > sum) {
+                C[innerI*BLOCK_SIZE + innerJ] = sum;
+            }
+        }
+        __syncthreads();
     }
     //   printf("New Added Element[%d][%d]: %d   Element[%d][%d]: %d  Combine Value: %d | Original Value: %d\n", bi, k, A[bi*BLOCK_SIZE + k], k, bj, B[k*BLOCK_SIZE + bj], sum, C[bi*BLOCK_SIZE + bj]);
   }
 
 __global__ void Phase1(int *dist, int Round, int n) {
-    const int innerI = threadIdx.y;
+    // const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int offset = BLOCK_SIZE * Round;
 
@@ -124,18 +125,18 @@ __global__ void Phase1(int *dist, int Round, int n) {
 
     // Every thread read its own value
     // how index: blockIndex (to next diagonal block) + innerBlockIndex (every thread has its own index)
-    C[innerI * BLOCK_SIZE + innerJ] = dist[offset*(n+1) + innerI*n + innerJ];
+    for (int innerI=0; innerI<BLOCK_SIZE; innerI++) C[innerI * BLOCK_SIZE + innerJ] = dist[offset*(n+1) + innerI*n + innerJ];
     __syncthreads();
-    BlockCalc(C, C, C, innerI, innerJ);
+    BlockCalc(C, C, C, innerJ);
     __syncthreads();
-    dist[offset*(n+1) + innerI*n + innerJ] = C[innerI * BLOCK_SIZE + innerJ];
+    for (int innerI=0; innerI<BLOCK_SIZE; innerI++) dist[offset*(n+1) + innerI*n + innerJ] = C[innerI * BLOCK_SIZE + innerJ];
 }
 
 __global__ void Phase2(int *dist, int Round, int n) {
     const int i = blockIdx.x; // "i" in n block in one row
     if (i == Round) return;
 
-    const int innerI = threadIdx.y;
+    // const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int diagonalOffset = BLOCK_SIZE * Round;
 
@@ -143,19 +144,23 @@ __global__ void Phase2(int *dist, int Round, int n) {
     __shared__ int A[BLOCK_SIZE * BLOCK_SIZE];
     __shared__ int B[BLOCK_SIZE * BLOCK_SIZE];
   
-    A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
-    B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ];
-    Diagonal[innerI*BLOCK_SIZE + innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
+    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
+        A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
+        B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ];
+        Diagonal[innerI*BLOCK_SIZE + innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
+    }
   
     __syncthreads();
   
-    BlockCalc(A, A, Diagonal, innerI, innerJ);
-    BlockCalc(B, Diagonal, B, innerI, innerJ);
+    BlockCalc(A, A, Diagonal, innerJ);
+    BlockCalc(B, Diagonal, B, innerJ);
 
     __syncthreads();
   
-    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = A[innerI*BLOCK_SIZE + innerJ];
-    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ] = B[innerI*BLOCK_SIZE + innerJ];
+    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
+        dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = A[innerI*BLOCK_SIZE + innerJ];
+        dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ] = B[innerI*BLOCK_SIZE + innerJ];
+    }
 }
 
 __global__ void Phase3(int *dist, int Round, int n) {
@@ -163,22 +168,24 @@ __global__ void Phase3(int *dist, int Round, int n) {
     const int i = blockIdx.y;
     if (i == Round && j == Round) return;
 
-    const int innerI = threadIdx.y;
+    // const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
 
     __shared__ int A[BLOCK_SIZE * BLOCK_SIZE];
     __shared__ int B[BLOCK_SIZE * BLOCK_SIZE];
     __shared__ int C[BLOCK_SIZE * BLOCK_SIZE];
   
-    C[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
-    A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
-    B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
+    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
+        C[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
+        A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
+        B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
+    }
   
     __syncthreads();
   
-    BlockCalc(C, A, B, innerI, innerJ);
+    BlockCalc(C, A, B, innerJ);
   
     __syncthreads();
   
-    dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ] = C[innerI*BLOCK_SIZE + innerJ];
+    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ] = C[innerI*BLOCK_SIZE + innerJ];
 }
