@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cuda_runtime.h>
 #define BLOCK_SIZE 64
+#define HALF_BLOCK_SIZE 32
 
 using namespace std;
 
@@ -81,7 +82,7 @@ void block_FW(int B) {
 	cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
 
     const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    dim3 block_dim(BLOCK_SIZE, 1, 1);
+    dim3 block_dim(32, 32, 1); // TODO: 32*32 -> padding (一定要開到 32x)
     dim3 grid_dim(blocks, blocks, 1);
 
     int round = ceil(n, B);
@@ -102,65 +103,130 @@ void block_FW(int B) {
 	cudaFree(dst);
 }
 
-
-inline __device__ void BlockCalc(int* C, int* A, int* B, int innerJ) {
-    for (int k = 0; k < BLOCK_SIZE; k++) {
-        for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
-            int sum = A[innerI*BLOCK_SIZE + k] + B[k*BLOCK_SIZE + innerJ];
-            if (C[innerI*BLOCK_SIZE + innerJ] > sum) {
-                C[innerI*BLOCK_SIZE + innerJ] = sum;
-            }
-        }
-        __syncthreads();
-    }
-    //   printf("New Added Element[%d][%d]: %d   Element[%d][%d]: %d  Combine Value: %d | Original Value: %d\n", bi, k, A[bi*BLOCK_SIZE + k], k, bj, B[k*BLOCK_SIZE + bj], sum, C[bi*BLOCK_SIZE + bj]);
-  }
-
 __global__ void Phase1(int *dist, int Round, int n) {
-    // const int innerI = threadIdx.y;
+    const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int offset = BLOCK_SIZE * Round;
 
-    __shared__ int C[BLOCK_SIZE * BLOCK_SIZE];
+    __shared__ int C[BLOCK_SIZE][BLOCK_SIZE]; // 2d
 
     // Every thread read its own value
     // how index: blockIndex (to next diagonal block) + innerBlockIndex (every thread has its own index)
-    for (int innerI=0; innerI<BLOCK_SIZE; innerI++) C[innerI * BLOCK_SIZE + innerJ] = dist[offset*(n+1) + innerI*n + innerJ];
+    C[innerI][innerJ] = dist[offset*(n+1) + innerI*n + innerJ];
+    C[innerI+HALF_BLOCK_SIZE][innerJ] = dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
+    C[innerI][innerJ+HALF_BLOCK_SIZE] = dist[offset*(n+1) + innerI*n + innerJ + HALF_BLOCK_SIZE];
+    C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ + HALF_BLOCK_SIZE];
     __syncthreads();
-    BlockCalc(C, C, C, innerJ);
-    __syncthreads();
-    for (int innerI=0; innerI<BLOCK_SIZE; innerI++) dist[offset*(n+1) + innerI*n + innerJ] = C[innerI * BLOCK_SIZE + innerJ];
+
+    for (int k = 0; k < BLOCK_SIZE; k++) {
+        int sum = C[innerI][k] + C[k][innerJ]; // TODO: 2d 
+        if (C[innerI][innerJ] > sum) { // 3 元表示法
+            C[innerI][innerJ] = sum;
+        }
+
+        sum = C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ]; // TODO: 2d 
+        if (C[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
+            C[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
+        }
+
+        sum = C[innerI][k] + C[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (C[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            C[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
+
+        sum = C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
+        __syncthreads(); // TODO: only phase one
+    }
+
+    dist[offset*(n+1) + innerI*n + innerJ] = C[innerI][innerJ];
+    dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ] = C[innerI+HALF_BLOCK_SIZE][innerJ];
+    dist[offset*(n+1) + innerI*n + innerJ + HALF_BLOCK_SIZE] = C[innerI][innerJ+HALF_BLOCK_SIZE];
+    dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ + HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
 }
 
 __global__ void Phase2(int *dist, int Round, int n) {
     const int i = blockIdx.x; // "i" in n block in one row
     if (i == Round) return;
 
-    // const int innerI = threadIdx.y;
+    const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int diagonalOffset = BLOCK_SIZE * Round;
 
-    __shared__ int Diagonal[BLOCK_SIZE * BLOCK_SIZE];
-    __shared__ int A[BLOCK_SIZE * BLOCK_SIZE];
-    __shared__ int B[BLOCK_SIZE * BLOCK_SIZE];
+    __shared__ int Diagonal[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ int A[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ int B[BLOCK_SIZE][BLOCK_SIZE];
   
-    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
-        A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
-        B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ];
-        Diagonal[innerI*BLOCK_SIZE + innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
-    }
-  
-    __syncthreads();
-  
-    BlockCalc(A, A, Diagonal, innerJ);
-    BlockCalc(B, Diagonal, B, innerJ);
+    A[innerI][innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
+    A[innerI+HALF_BLOCK_SIZE][innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
+    A[innerI][innerJ+HALF_BLOCK_SIZE] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ + HALF_BLOCK_SIZE];
+    A[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE];
 
-    __syncthreads();
+    B[innerI][innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ];
+    B[innerI+HALF_BLOCK_SIZE][innerJ] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
+    B[innerI][innerJ+HALF_BLOCK_SIZE] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE];
+    B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE] = dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE];
+
+    Diagonal[innerI][innerJ] = dist[diagonalOffset*(n+1) + innerI*n + innerJ]; // diagonalValue
+    Diagonal[innerI+HALF_BLOCK_SIZE][innerJ] = dist[diagonalOffset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ]; // diagonalValue
+    Diagonal[innerI][innerJ+HALF_BLOCK_SIZE] = dist[diagonalOffset*(n+1) + innerI*n + innerJ+HALF_BLOCK_SIZE]; // diagonalValue
+    Diagonal[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = dist[diagonalOffset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE]; // diagonalValue
   
-    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
-        dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = A[innerI*BLOCK_SIZE + innerJ];
-        dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ] = B[innerI*BLOCK_SIZE + innerJ];
+    __syncthreads();
+
+    for (int k = 0; k < BLOCK_SIZE; k++) {
+        int sum = A[innerI][k] + Diagonal[k][innerJ]; // TODO: 2d 
+        if (A[innerI][innerJ] > sum) { // 3 元表示法
+            A[innerI][innerJ] = sum;
+        }
+
+        sum = A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ]; // TODO: 2d 
+        if (A[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
+            A[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
+        }
+
+        sum = A[innerI][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (A[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            A[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
+
+        sum = A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
+
+        sum = Diagonal[innerI][k] + B[k][innerJ]; // TODO: 2d 
+        if (B[innerI][innerJ] > sum) { // 3 元表示法
+            B[innerI][innerJ] = sum;
+        }
+
+        sum = Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]; // TODO: 2d 
+        if (B[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
+            B[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
+        }
+
+        sum = Diagonal[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (B[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            B[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
+
+        sum = Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
     }
+
+    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = A[innerI][innerJ];
+    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ] = A[innerI+HALF_BLOCK_SIZE][innerJ];
+    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ + HALF_BLOCK_SIZE] = A[innerI][innerJ+HALF_BLOCK_SIZE];
+    dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = A[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE];
+
+    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ] = B[innerI][innerJ];
+    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ] = B[innerI+HALF_BLOCK_SIZE][innerJ];
+    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE] = B[innerI][innerJ+HALF_BLOCK_SIZE];
+    dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE];
 }
 
 __global__ void Phase3(int *dist, int Round, int n) {
@@ -168,24 +234,55 @@ __global__ void Phase3(int *dist, int Round, int n) {
     const int i = blockIdx.y;
     if (i == Round && j == Round) return;
 
-    // const int innerI = threadIdx.y;
+    const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
 
-    __shared__ int A[BLOCK_SIZE * BLOCK_SIZE];
-    __shared__ int B[BLOCK_SIZE * BLOCK_SIZE];
-    __shared__ int C[BLOCK_SIZE * BLOCK_SIZE];
+    __shared__ int A[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ int B[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ int C[BLOCK_SIZE][BLOCK_SIZE];
   
-    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) {
-        C[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
-        A[innerI*BLOCK_SIZE + innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
-        B[innerI*BLOCK_SIZE + innerJ] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
+    C[innerI][innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
+    C[innerI+HALF_BLOCK_SIZE][innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
+    C[innerI][innerJ+HALF_BLOCK_SIZE] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE];
+    C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE];
+
+
+    A[innerI][innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
+    A[innerI+HALF_BLOCK_SIZE][innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
+    A[innerI][innerJ+HALF_BLOCK_SIZE] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ + HALF_BLOCK_SIZE];
+    A[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ + HALF_BLOCK_SIZE];
+
+    B[innerI][innerJ] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
+    B[innerI+HALF_BLOCK_SIZE][innerJ] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
+    B[innerI][innerJ+HALF_BLOCK_SIZE] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE];
+    B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE] = dist[Round*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE];
+  
+    __syncthreads();
+
+    for (int k = 0; k < BLOCK_SIZE; k++) {
+        int sum = A[innerI][k] + B[k][innerJ]; // TODO: 2d 
+        if (C[innerI][innerJ] > sum) { // 3 元表示法
+            C[innerI][innerJ] = sum;
+        }
+
+        sum = A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]; // TODO: 2d 
+        if (C[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
+            C[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
+        }
+
+        sum = A[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (C[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            C[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
+
+        sum = A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
+        if (C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
+            C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
+        }
     }
-  
-    __syncthreads();
-  
-    BlockCalc(C, A, B, innerJ);
-  
-    __syncthreads();
-  
-    for (int innerI=0; innerI < BLOCK_SIZE; innerI++) dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ] = C[innerI*BLOCK_SIZE + innerJ];
+
+    dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ] = C[innerI][innerJ];
+    dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ] = C[innerI+HALF_BLOCK_SIZE][innerJ];
+    dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE] = C[innerI][innerJ+HALF_BLOCK_SIZE];
+    dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
 }
