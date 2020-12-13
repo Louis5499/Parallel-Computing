@@ -119,25 +119,13 @@ __global__ void Phase1(int *dist, int Round, int n) {
     __syncthreads();
 
     for (int k = 0; k < BLOCK_SIZE; k++) {
-        int sum = C[innerI][k] + C[k][innerJ]; // TODO: 2d 
-        if (C[innerI][innerJ] > sum) { // 3 元表示法
-            C[innerI][innerJ] = sum;
-        }
+        C[innerI][innerJ] = (C[innerI][k] + C[k][innerJ]) < C[innerI][innerJ] ? (C[innerI][k] + C[k][innerJ]) : C[innerI][innerJ];
 
-        sum = C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ]; // TODO: 2d 
-        if (C[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
-            C[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
-        }
+        C[innerI+HALF_BLOCK_SIZE][innerJ] = (C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ]) < C[innerI+HALF_BLOCK_SIZE][innerJ] ? (C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ]) : C[innerI+HALF_BLOCK_SIZE][innerJ];
 
-        sum = C[innerI][k] + C[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (C[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            C[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
+        C[innerI][innerJ+HALF_BLOCK_SIZE] = (C[innerI][k] + C[k][innerJ+HALF_BLOCK_SIZE]) < C[innerI][innerJ+HALF_BLOCK_SIZE] ? (C[innerI][k] + C[k][innerJ+HALF_BLOCK_SIZE]) : C[innerI][innerJ+HALF_BLOCK_SIZE];
 
-        sum = C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
+        C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = (C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ+HALF_BLOCK_SIZE]) < C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] ? (C[innerI+HALF_BLOCK_SIZE][k] + C[k][innerJ+HALF_BLOCK_SIZE]) : C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
         __syncthreads(); // TODO: only phase one
     }
 
@@ -177,45 +165,22 @@ __global__ void Phase2(int *dist, int Round, int n) {
     __syncthreads();
 
     for (int k = 0; k < BLOCK_SIZE; k++) {
-        int sum = A[innerI][k] + Diagonal[k][innerJ]; // TODO: 2d 
-        if (A[innerI][innerJ] > sum) { // 3 元表示法
-            A[innerI][innerJ] = sum;
-        }
 
-        sum = A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ]; // TODO: 2d 
-        if (A[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
-            A[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
-        }
+        A[innerI][innerJ] = (A[innerI][k] + Diagonal[k][innerJ]) < A[innerI][innerJ] ? (A[innerI][k] + Diagonal[k][innerJ]) : A[innerI][innerJ];
 
-        sum = A[innerI][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (A[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            A[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
+        A[innerI+HALF_BLOCK_SIZE][innerJ] = (A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ]) < A[innerI+HALF_BLOCK_SIZE][innerJ] ? (A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ]) : A[innerI+HALF_BLOCK_SIZE][innerJ];
 
-        sum = A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
+        A[innerI][innerJ+HALF_BLOCK_SIZE] = (A[innerI][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]) < A[innerI][innerJ+HALF_BLOCK_SIZE] ? (A[innerI][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]) : A[innerI][innerJ+HALF_BLOCK_SIZE];
+        
+        A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = (A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]) < A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] ? (A[innerI+HALF_BLOCK_SIZE][k] + Diagonal[k][innerJ+HALF_BLOCK_SIZE]) : A[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
 
-        sum = Diagonal[innerI][k] + B[k][innerJ]; // TODO: 2d 
-        if (B[innerI][innerJ] > sum) { // 3 元表示法
-            B[innerI][innerJ] = sum;
-        }
+        B[innerI][innerJ] = (Diagonal[innerI][k] + B[k][innerJ]) < B[innerI][innerJ] ? (Diagonal[innerI][k] + B[k][innerJ]) : B[innerI][innerJ];
 
-        sum = Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]; // TODO: 2d 
-        if (B[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
-            B[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
-        }
+        B[innerI+HALF_BLOCK_SIZE][innerJ] = (Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]) < B[innerI+HALF_BLOCK_SIZE][innerJ] ? (Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]) : B[innerI+HALF_BLOCK_SIZE][innerJ];
 
-        sum = Diagonal[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (B[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            B[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
-
-        sum = Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
+        B[innerI][innerJ+HALF_BLOCK_SIZE] = (Diagonal[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]) < B[innerI][innerJ+HALF_BLOCK_SIZE] ? (Diagonal[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]) : B[innerI][innerJ+HALF_BLOCK_SIZE];
+        
+        B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = (Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]) < B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] ? (Diagonal[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]) : B[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
     }
 
     dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ] = A[innerI][innerJ];
@@ -260,25 +225,13 @@ __global__ void Phase3(int *dist, int Round, int n) {
     __syncthreads();
 
     for (int k = 0; k < BLOCK_SIZE; k++) {
-        int sum = A[innerI][k] + B[k][innerJ]; // TODO: 2d 
-        if (C[innerI][innerJ] > sum) { // 3 元表示法
-            C[innerI][innerJ] = sum;
-        }
+        C[innerI][innerJ] = (A[innerI][k] + B[k][innerJ]) < C[innerI][innerJ] ? (A[innerI][k] + B[k][innerJ]) : C[innerI][innerJ];
 
-        sum = A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]; // TODO: 2d 
-        if (C[innerI+HALF_BLOCK_SIZE][innerJ] > sum) { // 3 元表示法
-            C[innerI+HALF_BLOCK_SIZE][innerJ] = sum;
-        }
+        C[innerI+HALF_BLOCK_SIZE][innerJ] = (A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]) < C[innerI+HALF_BLOCK_SIZE][innerJ] ? (A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ]) : C[innerI+HALF_BLOCK_SIZE][innerJ];
 
-        sum = A[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (C[innerI][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            C[innerI][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
-
-        sum = A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]; // TODO: 2d 
-        if (C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] > sum) { // 3 元表示法
-            C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = sum;
-        }
+        C[innerI][innerJ+HALF_BLOCK_SIZE] = (A[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]) < C[innerI][innerJ+HALF_BLOCK_SIZE] ? (A[innerI][k] + B[k][innerJ+HALF_BLOCK_SIZE]) : C[innerI][innerJ+HALF_BLOCK_SIZE];
+        
+        C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = (A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]) < C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] ? (A[innerI+HALF_BLOCK_SIZE][k] + B[k][innerJ+HALF_BLOCK_SIZE]) : C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
     }
 
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ] = C[innerI][innerJ];
