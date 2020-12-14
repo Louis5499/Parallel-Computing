@@ -22,10 +22,12 @@ int original_n, n, m;
 int* Dist = NULL;
 
 int main(int argc, char* argv[]) {
-	input(argv[1]);
+    input(argv[1]);
+    // cudaSetDevice(1);
 	block_FW(BLOCK_SIZE);
 	output(argv[2]);
     cudaFreeHost(Dist);
+    cudaDeviceReset();
 	return 0;
 }
 
@@ -75,20 +77,23 @@ int ceil(int a, int b) { return (a + b - 1) / b; }
 void block_FW(int B) {
     int* dst = NULL;
 
-    const unsigned long matrixSize = n * n * sizeof(int);
+    const int matrixSize = n * n * sizeof(int);
 
-    cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
-    cudaMalloc(&dst, matrixSize);
-	cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
+    //cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
+    // size_t pitch;
+    cudaMallocPitch(&dst, &pitch, n * sizeof(int), n);
+    // cudaMalloc(&dst, matrixSize);
+    // cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
+    cudaMemcpy2D(dst, pitch, Dist, sizeof(int)*n, sizeof(int)*n, n, cudaMemcpyHostToDevice);
 
     const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    dim3 block_dim(32, 32, 1); // padding (一定要開到 32x)
+    dim3 block_dim(32, 32, 1); // TODO: 32*32 -> padding (一定要開到 32x)
     dim3 grid_dim(blocks, blocks, 1);
 
     int round = ceil(n, B);
     for (int r = 0; r < round; ++r) {
-        printf("%d %d\n", r, round);
-        fflush(stdout);
+        // printf("%d %d\n", r, round);
+        // fflush(stdout);
         /* Phase 1*/
         Phase1<<<1, block_dim>>>(dst, r, n);
 
@@ -99,9 +104,15 @@ void block_FW(int B) {
         Phase3<<<grid_dim, block_dim>>>(dst, r, n);
     }
 
-    cudaMemcpy(Dist, dst, matrixSize, cudaMemcpyDeviceToHost);
+    // cudaMemcpy(Dist, dst, matrixSize, cudaMemcpyDeviceToHost);
+    cudaMemcpy2D(Dist, sizeof(int)*n, dst, pitch, sizeof(int)*n, n, cudaMemcpyDeviceToHost);
 	cudaFree(dst);
 }
+
+inline __device__ void BlockCalc(int i, int j, int innerI, int innerJ) {
+    
+}
+
 
 __global__ void Phase1(int *dist, int Round, int n) {
     const int innerI = threadIdx.y;
@@ -117,6 +128,7 @@ __global__ void Phase1(int *dist, int Round, int n) {
     C[innerI][innerJ+HALF_BLOCK_SIZE] = dist[offset*(n+1) + innerI*n + innerJ + HALF_BLOCK_SIZE];
     C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE] = dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ + HALF_BLOCK_SIZE];
     __syncthreads();
+    printf("[%d, %d]: %d   %d   %d   %d\n", innerI, innerJ, C[innerI][innerJ],  C[innerI+HALF_BLOCK_SIZE][innerJ], C[innerI][innerJ+HALF_BLOCK_SIZE], C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE]);
 
     for (int k = 0; k < BLOCK_SIZE; k++) {
         C[innerI][innerJ] = (C[innerI][k] + C[k][innerJ]) < C[innerI][innerJ] ? (C[innerI][k] + C[k][innerJ]) : C[innerI][innerJ];

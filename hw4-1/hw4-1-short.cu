@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <iostream>
+#include <fstream>
 #include <cuda_runtime.h>
 #define BLOCK_SIZE 64
 #define HALF_BLOCK_SIZE 32
@@ -8,23 +9,24 @@
 using namespace std;
 
 const int INF = ((1 << 30) - 1);
+const short SMALL_INF = 9999;
 // const int V = 50010;
 void input(char* infile);
 void output(char *outFileName);
 
 void block_FW(int B);
 int ceil(int a, int b);
-__global__ void Phase1(int *dist, int Round, int n);
-__global__ void Phase2(int *dist, int Round, int n);
-__global__ void Phase3(int *dist, int Round, int n);
+__global__ void Phase1(short *dist, int Round, int n);
+__global__ void Phase2(short *dist, int Round, int n);
+__global__ void Phase3(short *dist, int Round, int n);
 
 int original_n, n, m;
-int* Dist = NULL;
+short* Dist = NULL;
 
 int main(int argc, char* argv[]) {
 	input(argv[1]);
 	block_FW(BLOCK_SIZE);
-	output(argv[2]);
+    output(argv[2]);
     cudaFreeHost(Dist);
 	return 0;
 }
@@ -34,18 +36,20 @@ void input(char* infile) {
     FILE* file = fopen(infile, "rb");
     fread(&original_n, sizeof(int), 1, file);
     fread(&m, sizeof(int), 1, file);
+    cout << "intput n: " << original_n << endl;
 
     // make n % BLOCK_SIZE == 0
     n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
 
-    Dist = (int*) malloc(sizeof(int)*n*n);
+    Dist = (short*) malloc(sizeof(short)*n*n);
+    // cudaMallocHost((void **)&Dist, sizeof(int)*n*n);
 
     for (int i = 0; i < n; ++ i) {
         for (int j = 0; j < n; ++ j) {
             if (i == j) {
                 Dist[i*n+j] = 0;
             } else {
-                Dist[i*n+j] = INF;
+                Dist[i*n+j] = SMALL_INF;
             }
         }
     }
@@ -53,42 +57,52 @@ void input(char* infile) {
     int pair[3];
     for (int i = 0; i < m; ++ i) {
         fread(pair, sizeof(int), 3, file);
-        Dist[pair[0]*n+pair[1]] = pair[2];
+        Dist[pair[0]*n+pair[1]] = short(pair[2]);
     }
     fclose(file);
 
 }
 
 void output(char *outFileName) {
-    FILE *outfile = fopen(outFileName, "w");
-	for (int i = 0; i < original_n; ++i) {
-		for (int j = 0; j < original_n; ++j) {
-            if (Dist[i*n+j] >= INF) Dist[i*n+j] = INF;
-        }
-		fwrite(&Dist[i*n], sizeof(int), original_n, outfile);
-	}
-    fclose(outfile);
+    ofstream fout(outFileName);
+    for(int i=0; i<original_n; i++){
+      for(int j=0; j<original_n; j++){
+          int val = (int) Dist[i*n + j];
+          if (val >= SMALL_INF) fout.write((char *)&INF, sizeof(int));
+          else fout.write((char *)(&val), sizeof(int));
+      }
+    }
+    fout.close();
+
+    // FILE *outfile = fopen(outFileName, "w");
+	// for (int i = 0; i < original_n; ++i) {
+	// 	for (int j = 0; j < original_n; ++j) {
+    //         if (Dist[i*n+j] >= INF) Dist[i*n+j] = INF;
+    //     }
+	// 	fwrite(&Dist[i*n], sizeof(int), original_n, outfile);
+	// }
+    // fclose(outfile);
 }
 
 int ceil(int a, int b) { return (a + b - 1) / b; }
 
 void block_FW(int B) {
-    int* dst = NULL;
+    short* dst = NULL;
 
-    const unsigned long matrixSize = n * n * sizeof(int);
+    const int matrixSize = n * n * sizeof(short);
 
     cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
     cudaMalloc(&dst, matrixSize);
 	cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
 
     const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    dim3 block_dim(32, 32, 1); // padding (一定要開到 32x)
-    dim3 grid_dim(blocks, blocks, 1);
+    dim3 block_dim(32, 32); // TODO: 32*32 -> padding (一定要開到 32x)
+    dim3 grid_dim(blocks, blocks);
 
     int round = ceil(n, B);
     for (int r = 0; r < round; ++r) {
-        printf("%d %d\n", r, round);
-        fflush(stdout);
+        // printf("%d %d\n", r, round);
+        // fflush(stdout);
         /* Phase 1*/
         Phase1<<<1, block_dim>>>(dst, r, n);
 
@@ -98,17 +112,17 @@ void block_FW(int B) {
         /* Phase 3*/
         Phase3<<<grid_dim, block_dim>>>(dst, r, n);
     }
-
+    printf("CUDA Error: %s\n", cudaGetErrorString(cudaGetLastError()));
     cudaMemcpy(Dist, dst, matrixSize, cudaMemcpyDeviceToHost);
-	cudaFree(dst);
+	cudaFree(&dst);
 }
 
-__global__ void Phase1(int *dist, int Round, int n) {
+__global__ void Phase1(short *dist, int Round, int n) {
     const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int offset = BLOCK_SIZE * Round;
 
-    __shared__ int C[BLOCK_SIZE][BLOCK_SIZE]; // 2d
+    __shared__ short C[BLOCK_SIZE][BLOCK_SIZE]; // 2d
 
     // Every thread read its own value
     // how index: blockIndex (to next diagonal block) + innerBlockIndex (every thread has its own index)
@@ -135,7 +149,7 @@ __global__ void Phase1(int *dist, int Round, int n) {
     dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ + HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
 }
 
-__global__ void Phase2(int *dist, int Round, int n) {
+__global__ void Phase2(short *dist, int Round, int n) {
     const int i = blockIdx.x; // "i" in n block in one row
     if (i == Round) return;
 
@@ -143,9 +157,9 @@ __global__ void Phase2(int *dist, int Round, int n) {
     const int innerJ = threadIdx.x;
     const int diagonalOffset = BLOCK_SIZE * Round;
 
-    __shared__ int Diagonal[BLOCK_SIZE][BLOCK_SIZE];
-    __shared__ int A[BLOCK_SIZE][BLOCK_SIZE];
-    __shared__ int B[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ short Diagonal[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ short A[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ short B[BLOCK_SIZE][BLOCK_SIZE];
   
     A[innerI][innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + innerI*n + innerJ];
     A[innerI+HALF_BLOCK_SIZE][innerJ] = dist[i*BLOCK_SIZE*n + Round*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
@@ -194,7 +208,7 @@ __global__ void Phase2(int *dist, int Round, int n) {
     dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE];
 }
 
-__global__ void Phase3(int *dist, int Round, int n) {
+__global__ void Phase3(short *dist, int Round, int n) {
     const int j = blockIdx.x;
     const int i = blockIdx.y;
     if (i == Round && j == Round) return;
@@ -202,9 +216,9 @@ __global__ void Phase3(int *dist, int Round, int n) {
     const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
 
-    __shared__ int A[BLOCK_SIZE][BLOCK_SIZE];
-    __shared__ int B[BLOCK_SIZE][BLOCK_SIZE];
-    __shared__ int C[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ short A[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ short B[BLOCK_SIZE][BLOCK_SIZE];
+    __shared__ short C[BLOCK_SIZE][BLOCK_SIZE];
   
     C[innerI][innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ];
     C[innerI+HALF_BLOCK_SIZE][innerJ] = dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ];
