@@ -87,8 +87,8 @@ void block_FW(int B) {
 
     int round = ceil(n, B);
     for (int r = 0; r < round; ++r) {
-        printf("%d %d\n", r, round);
-        fflush(stdout);
+        // printf("%d %d\n", r, round);
+        // fflush(stdout);
         /* Phase 1*/
         Phase1<<<1, block_dim>>>(dst, r, n);
 
@@ -164,6 +164,7 @@ __global__ void Phase2(int *dist, int Round, int n) {
   
     __syncthreads();
 
+    #pragma unroll 32
     for (int k = 0; k < BLOCK_SIZE; k++) {
 
         A[innerI][innerJ] = (A[innerI][k] + Diagonal[k][innerJ]) < A[innerI][innerJ] ? (A[innerI][k] + Diagonal[k][innerJ]) : A[innerI][innerJ];
@@ -224,6 +225,7 @@ __global__ void Phase3(int *dist, int Round, int n) {
   
     __syncthreads();
 
+    #pragma unroll 32
     for (int k = 0; k < BLOCK_SIZE; k++) {
         C[innerI][innerJ] = (A[innerI][k] + B[k][innerJ]) < C[innerI][innerJ] ? (A[innerI][k] + B[k][innerJ]) : C[innerI][innerJ];
 
