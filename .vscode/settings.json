@@ -2,5 +2,11 @@
   "files.associations": {
     "stdexcept": "cpp",
     "iterator": "cpp"
-  }
+  },
+  "python.linting.pylintEnabled": true,
+  "python.linting.enabled": true,
+  "python.linting.banditEnabled": false,
+  "python.linting.pylamaEnabled": false,
+  "python.linting.pydocstyleEnabled": false,
+  "python.linting.mypyEnabled": false
 }
