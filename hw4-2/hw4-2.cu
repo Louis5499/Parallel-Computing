@@ -1,109 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <iostream>
 #include <cuda_runtime.h>
+#include <assert.h>
+#include <math.h>
+#include <omp.h>
 #define BLOCK_SIZE 64
 #define HALF_BLOCK_SIZE 32
+#define inf 1e9
 
-using namespace std;
-
-const int INF = ((1 << 30) - 1);
-// const int V = 50010;
-void input(char* infile);
-void output(char *outFileName);
-
-void block_FW(int B);
-int ceil(int a, int b);
-__global__ void Phase1(int *dist, int Round, int n);
-__global__ void Phase2(int *dist, int Round, int n);
-__global__ void Phase3(int *dist, int Round, int n);
-
-int original_n, n, m;
-int* Dist = NULL;
-
-int main(int argc, char* argv[]) {
-	input(argv[1]);
-	block_FW(BLOCK_SIZE);
-	output(argv[2]);
-    cudaFreeHost(Dist);
-	return 0;
-}
-
-void input(char* infile) {
-    cout << "input" << endl;
-    FILE* file = fopen(infile, "rb");
-    fread(&original_n, sizeof(int), 1, file);
-    fread(&m, sizeof(int), 1, file);
-
-    // make n % BLOCK_SIZE == 0
-    n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
-
-    Dist = (int*) malloc(sizeof(int)*n*n);
-
-    for (int i = 0; i < n; ++ i) {
-        for (int j = 0; j < n; ++ j) {
-            if (i == j) {
-                Dist[i*n+j] = 0;
-            } else {
-                Dist[i*n+j] = INF;
-            }
-        }
-    }
-
-    int pair[3];
-    for (int i = 0; i < m; ++ i) {
-        fread(pair, sizeof(int), 3, file);
-        Dist[pair[0]*n+pair[1]] = pair[2];
-    }
-    fclose(file);
-
-}
-
-void output(char *outFileName) {
-    FILE *outfile = fopen(outFileName, "w");
-	for (int i = 0; i < original_n; ++i) {
-		for (int j = 0; j < original_n; ++j) {
-            if (Dist[i*n+j] >= INF) Dist[i*n+j] = INF;
-        }
-		fwrite(&Dist[i*n], sizeof(int), original_n, outfile);
-	}
-    fclose(outfile);
-}
-
-int ceil(int a, int b) { return (a + b - 1) / b; }
-
-void block_FW(int B) {
-    int* dst = NULL;
-
-    const unsigned long matrixSize = n * n * sizeof(int);
-
-    cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
-    cudaMalloc(&dst, matrixSize);
-	cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
-
-    const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    dim3 block_dim(32, 32, 1); // padding (一定要開到 32x)
-    dim3 grid_dim(blocks, blocks, 1);
-
-    int round = ceil(n, B);
-    for (int r = 0; r < round; ++r) {
-        // printf("%d %d\n", r, round);
-        // fflush(stdout);
-        /* Phase 1*/
-        Phase1<<<1, block_dim>>>(dst, r, n);
-
-        /* Phase 2*/
-        Phase2<<<blocks, block_dim>>>(dst, r, n);
-
-        /* Phase 3*/
-        Phase3<<<grid_dim, block_dim>>>(dst, r, n);
-    }
-
-    cudaMemcpy(Dist, dst, matrixSize, cudaMemcpyDeviceToHost);
-	cudaFree(dst);
-}
-
-__global__ void Phase1(int *dist, int Round, int n) {
+__global__ void Phase_1(int *dist, int Round, int n) {
     const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int offset = BLOCK_SIZE * Round;
@@ -135,7 +40,8 @@ __global__ void Phase1(int *dist, int Round, int n) {
     dist[offset*(n+1) + (innerI+HALF_BLOCK_SIZE)*n + innerJ + HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
 }
 
-__global__ void Phase2(int *dist, int Round, int n) {
+
+__global__ void Phase_2(int *dist, int Round, int n) {
     const int i = blockIdx.x; // "i" in n block in one row
     if (i == Round) return;
 
@@ -195,9 +101,9 @@ __global__ void Phase2(int *dist, int Round, int n) {
     dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE];
 }
 
-__global__ void Phase3(int *dist, int Round, int n) {
+__global__ void Phase_3(int *dist, int Round, int n, int yOffset) {
     const int j = blockIdx.x;
-    const int i = blockIdx.y;
+    const int i = blockIdx.y + yOffset;
     if (i == Round && j == Round) return;
 
     const int innerI = threadIdx.y;
@@ -240,4 +146,110 @@ __global__ void Phase3(int *dist, int Round, int n) {
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ] = C[innerI+HALF_BLOCK_SIZE][innerJ];
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE] = C[innerI][innerJ+HALF_BLOCK_SIZE];
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
+}
+
+int main(int argc, char *argv[]){
+	/******************************* load data *********************************/
+    // only two arguments are allowed
+    assert(argc == 3);
+
+    int E, V;
+    FILE *in_fp;
+    in_fp = fopen(argv[1], "r");
+    if(in_fp == NULL) printf("Failed on opening file\n");
+    // read in data
+    fread(&V, sizeof(int), 1, in_fp);
+    fread(&E, sizeof(int), 1, in_fp);
+
+    // compensate V to make V % BLOCK_SIZE == 0
+	int comp_V = V + (BLOCK_SIZE - ((V-1) % BLOCK_SIZE + 1));
+
+	//allocate memory
+    int *adj_mat; 
+    size_t sz = comp_V * comp_V * sizeof(int);
+	cudaMallocHost((void**) &adj_mat, sz);
+	for(int i = 0; i < comp_V; i++){
+        for(int j = 0; j < comp_V; j++){
+            if(i == j) adj_mat[i*comp_V+j] = 0;
+            else adj_mat[i*comp_V+j] = inf;
+        }
+    }
+    // load data to graph
+    int src, dst, w;
+    while(E--){
+        fread(&src, sizeof(int), 1, in_fp);
+        fread(&dst, sizeof(int), 1, in_fp);
+        fread(&w, sizeof(int), 1, in_fp);
+        adj_mat[src*comp_V+dst] = w;
+    }
+    fclose(in_fp);
+    /****************************************************************************/
+
+    int *adj_mat_d[2];
+    int round =  ceil((float) comp_V/BLOCK_SIZE);
+    const int blocks = (comp_V + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	
+    // 2D block
+    dim3 threads(32, 32);
+	dim3 p2(2, round-1);
+
+	#pragma omp parallel num_threads(2)
+	{
+		int thread_id = omp_get_thread_num();
+		cudaSetDevice(thread_id);
+
+        // Malloc memory
+        cudaMalloc(&adj_mat_d[thread_id], sz);
+
+        // divide data
+		int round_per_thd = round / 2;
+		int y_offset = round_per_thd * thread_id;
+        if(thread_id == 1) round_per_thd += round % 2;
+
+		dim3 p3(round, round_per_thd);
+		
+        size_t cp_amount = comp_V * BLOCK_SIZE * round_per_thd * sizeof(int);
+        cudaMemcpy(adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * comp_V, adj_mat + y_offset * BLOCK_SIZE * comp_V, cp_amount, cudaMemcpyHostToDevice);
+
+        size_t block_row_sz = BLOCK_SIZE * comp_V * sizeof(int);
+		for(int r = 0; r < round; r++) {
+
+            // Every thread has its own y_offset
+            if (r >= y_offset && r < (y_offset + round_per_thd)) {
+                cudaMemcpy(adj_mat + r * BLOCK_SIZE * comp_V, adj_mat_d[thread_id] + r * BLOCK_SIZE * comp_V, block_row_sz, cudaMemcpyDeviceToHost);
+            }
+
+            #pragma omp barrier
+            cudaMemcpy(adj_mat_d[thread_id] + r * BLOCK_SIZE * comp_V, adj_mat + r * BLOCK_SIZE * comp_V, block_row_sz, cudaMemcpyHostToDevice);
+
+            Phase_1 <<<1, threads>>>(adj_mat_d[thread_id], r, comp_V);
+                
+            //cudaDeviceSynchronize();
+
+            Phase_2 <<<blocks, threads>>>(adj_mat_d[thread_id], r, comp_V);
+
+            //cudaDeviceSynchronize();
+
+            Phase_3 <<<p3, threads>>>(adj_mat_d[thread_id], r, comp_V, y_offset);
+        }
+
+		cudaMemcpy(adj_mat + y_offset *BLOCK_SIZE * comp_V, adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * comp_V, block_row_sz * round_per_thd, cudaMemcpyDeviceToHost);
+		#pragma omp barrier
+	}
+	
+	// output
+    FILE *out_fp;
+    out_fp = fopen(argv[2], "wb");
+    for(int i = 0; i < V; i++){
+        for(int j = 0; j < V; j++){
+            fwrite(adj_mat+i*comp_V+j, sizeof(int), 1, out_fp);
+        }   
+    }   
+    fclose(out_fp);
+
+	//free memory
+	cudaFree(adj_mat_d[0]);
+    cudaFree(adj_mat_d[1]);
+    cudaFreeHost(adj_mat);
+	return 0;
 }

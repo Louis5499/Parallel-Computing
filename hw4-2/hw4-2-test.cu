@@ -17,7 +17,7 @@ void block_FW(int B);
 int ceil(int a, int b);
 __global__ void Phase1(int *dist, int Round, int n);
 __global__ void Phase2(int *dist, int Round, int n);
-__global__ void Phase3(int *dist, int Round, int n);
+__global__ void Phase3(int *dist, int Round, int n, int yOffset);
 
 int original_n, n, m;
 int* Dist = NULL;
@@ -40,7 +40,6 @@ void input(char* infile) {
     n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
 
     Dist = (int*) malloc(sizeof(int)*n*n);
-    // cudaHostAlloc((void **)&Dist, sizeof(int)*n*n, cudaHostAllocMapped|cudaHostAllocPortable);
 
     for (int i = 0; i < n; ++ i) {
         for (int j = 0; j < n; ++ j) {
@@ -75,24 +74,36 @@ void output(char *outFileName) {
 int ceil(int a, int b) { return (a + b - 1) / b; }
 
 void block_FW(int B) {
-    int* dst = NULL;
-
-    int num_gpus;
-    cudaGetDeviceCount(&num_gpus);
-    omp_set_num_threads(num_gpus);
+    int* dst1 = NULL;
+    int* dst2 = NULL;
 
     const unsigned long matrixSize = n * n * sizeof(int);
 
     cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
-    cudaMalloc(&dst, matrixSize);
-	cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
 
     const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
     dim3 block_dim(32, 32, 1); // padding (一定要開到 32x)
-    dim3 grid_dim(blocks, blocks, 1);
+
+    const int blocks1 = blocks%2 != 0 ? (blocks/2) + 1 : (blocks/2);
+    const int blocks2 = blocks/2;
+
+    dim3 grid_dim1(blocks, blocks1, 1);
+    dim3 grid_dim2(blocks, blocks2, 1);
 
     int round = ceil(n, B);
-    for (int r = 0; r < round; ++r) {
+    #pragma omp parallel num_threads(2)
+    {
+      int cpuThreadId = omp_get_thread_num();
+      cudaSetDevice(cpuThreadId);
+
+      int *dst = NULL;
+      dst = cpuThreadId == 0 ? dst1 : dst2;
+
+      cudaSetDevice(cpuThreadId);
+      cudaMalloc(&dst, matrixSize);
+      cudaMemcpy(dst, Dist, matrixSize, cudaMemcpyHostToDevice);
+
+      for (int r = 0; r < round; ++r) {
         // printf("%d %d\n", r, round);
         // fflush(stdout);
         /* Phase 1*/
@@ -101,19 +112,23 @@ void block_FW(int B) {
         /* Phase 2*/
         Phase2<<<blocks, block_dim>>>(dst, r, n);
 
-        #pragma omp parallel
-        {
-            unsigned int cpu_num_threads = omp_get_num_threads();
-            unsigned int cpu_thread_id = omp_get_thread_num();
-            cudaSetDevice(cpu_thread_id);
+        cudaDeviceSynchronize();
 
-            /* Phase 3*/
-            Phase3<<<grid_dim, block_dim>>>(dst, r, n);
+        /* Phase 3*/
+        if (cpuThreadId == 0) {
+          Phase3<<<grid_dim1, block_dim>>>(dst, r, n, 0);
+          cudaMemcpyPeer(dst1 + blocks1*BLOCK_SIZE*n, 0, dst2, 1, sizeof(int)*blocks2*BLOCK_SIZE*n);
+        } else {
+          Phase3<<<grid_dim2, block_dim>>>(dst, r, n, blocks1);
+          cudaMemcpyPeer(dst2, 1, dst1, 0, sizeof(int)*blocks1*BLOCK_SIZE*n);
         }
+      }
+      #pragma omp barrier
+      if (cpuThreadId == 0) cudaMemcpy(Dist, dst, matrixSize, cudaMemcpyDeviceToHost);
     }
 
-    cudaMemcpy(Dist, dst, matrixSize, cudaMemcpyDeviceToHost);
-	cudaFree(dst);
+    cudaFree(dst1);
+    cudaFree(dst2);
 }
 
 __global__ void Phase1(int *dist, int Round, int n) {
@@ -208,9 +223,9 @@ __global__ void Phase2(int *dist, int Round, int n) {
     dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE];
 }
 
-__global__ void Phase3(int *dist, int Round, int n) {
+__global__ void Phase3(int *dist, int Round, int n, int yOffset) {
     const int j = blockIdx.x;
-    const int i = blockIdx.y;
+    const int i = blockIdx.y + yOffset;
     if (i == Round && j == Round) return;
 
     const int innerI = threadIdx.y;

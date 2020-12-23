@@ -129,6 +129,7 @@ void block_FW(int B) {
           cudaMemcpyPeer(dst2, 1, dst1, 0, sizeof(int)*(blocks1*BLOCK_SIZE)*n);
         }
       }
+      #pragma omp barrier
     }
 
     cudaMemcpy(Dist, dst1, matrixSize, cudaMemcpyDeviceToHost);
