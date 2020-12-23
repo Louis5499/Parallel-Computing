@@ -85,32 +85,30 @@ void block_FW() {
     int round = ceil(n, BLOCK_SIZE);
 	#pragma omp parallel num_threads(2)
 	{
-		int cpuThreadId = omp_get_thread_num();
+		const int cpuThreadId = omp_get_thread_num();
 		cudaSetDevice(cpuThreadId);
 
-        // Malloc memory
         cudaMalloc(&dst[cpuThreadId], matrixSize);
 
-        // divide data
-		int round_per_thd = round / 2;
-		int y_offset = round_per_thd * cpuThreadId;
-        if(cpuThreadId == 1) round_per_thd += round % 2;
+		int roundPerThread = round / 2;
+        const int yOffset = roundPerThread * cpuThreadId;
+        const size_t yOffsetSize = yOffset*BLOCK_SIZE*n;
+        if(cpuThreadId == 1) roundPerThread += round % 2;
 
-		dim3 grid_dim(round, round_per_thd);
-		
-        size_t cp_amount = n * BLOCK_SIZE * round_per_thd * sizeof(int);
-        cudaMemcpy(dst[cpuThreadId] + y_offset *BLOCK_SIZE * n, Dist + y_offset * BLOCK_SIZE * n, cp_amount, cudaMemcpyHostToDevice);
+		dim3 grid_dim(round, roundPerThread);
+        
+        const size_t rowBlockSize = BLOCK_SIZE * n * sizeof(int);
+        const size_t halfBlockSize = rowBlockSize * roundPerThread;
+        cudaMemcpy(dst[cpuThreadId] + yOffsetSize, Dist + yOffsetSize, halfBlockSize, cudaMemcpyHostToDevice);
 
-        size_t block_row_sz = BLOCK_SIZE * n * sizeof(int);
 		for(int r = 0; r < round; r++) {
-
-            // Every thread has its own y_offset
-            if (r >= y_offset && r < (y_offset + round_per_thd)) {
-                cudaMemcpy(Dist + r * BLOCK_SIZE * n, dst[cpuThreadId] + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyDeviceToHost);
+            // Every thread has its own yOffset
+            if (r >= yOffset && r < (yOffset + roundPerThread)) {
+                cudaMemcpy(Dist + r * BLOCK_SIZE * n, dst[cpuThreadId] + r * BLOCK_SIZE * n, rowBlockSize, cudaMemcpyDeviceToHost);
             }
 
             #pragma omp barrier
-            cudaMemcpy(dst[cpuThreadId] + r * BLOCK_SIZE * n, Dist + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyHostToDevice);
+            cudaMemcpy(dst[cpuThreadId] + r * BLOCK_SIZE * n, Dist + r * BLOCK_SIZE * n, rowBlockSize, cudaMemcpyHostToDevice);
 
             /* Phase 1*/
             Phase1 <<<1, block_dim>>>(dst[cpuThreadId], r, n);
@@ -119,10 +117,10 @@ void block_FW() {
             Phase2 <<<blocks, block_dim>>>(dst[cpuThreadId], r, n);
 
             /* Phase 3*/
-            Phase3 <<<grid_dim, block_dim>>>(dst[cpuThreadId], r, n, y_offset);
+            Phase3 <<<grid_dim, block_dim>>>(dst[cpuThreadId], r, n, yOffset);
         }
 
-		cudaMemcpy(Dist + y_offset *BLOCK_SIZE * n, dst[cpuThreadId] + y_offset *BLOCK_SIZE * n, block_row_sz * round_per_thd, cudaMemcpyDeviceToHost);
+		cudaMemcpy(Dist + yOffsetSize, dst[cpuThreadId] + yOffsetSize, halfBlockSize, cudaMemcpyDeviceToHost);
 		#pragma omp barrier
     }
     cudaFree(dst[0]);
