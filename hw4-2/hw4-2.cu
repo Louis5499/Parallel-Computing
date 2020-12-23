@@ -181,6 +181,17 @@ void input(char* infile) {
 
 }
 
+void output(char *outFileName) {
+    FILE *outfile = fopen(outFileName, "w");
+	for (int i = 0; i < original_n; ++i) {
+		for (int j = 0; j < original_n; ++j) {
+            if (Dist[i*n+j] >= INF) Dist[i*n+j] = INF;
+        }
+		fwrite(&Dist[i*n], sizeof(int), original_n, outfile);
+	}
+    fclose(outfile);
+}
+
 // int main(int argc, char* argv[]) {
 // 	input(argv[1]);
 // 	block_FW(BLOCK_SIZE);
@@ -195,6 +206,8 @@ int main(int argc, char *argv[]){
     input(argv[1]);
 
     size_t matrixSize = n * n * sizeof(int);
+
+    cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
 
     int *adj_mat_d[2];
     const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -246,15 +259,7 @@ int main(int argc, char *argv[]){
 		#pragma omp barrier
 	}
 	
-	// output
-    FILE *out_fp;
-    out_fp = fopen(argv[2], "wb");
-    for(int i = 0; i < original_n; i++){
-        for(int j = 0; j < original_n; j++){
-            fwrite(Dist+i*n+j, sizeof(int), 1, out_fp);
-        }   
-    }   
-    fclose(out_fp);
+	output(argv[2]);
 
 	//free memory
 	cudaFree(adj_mat_d[0]);
