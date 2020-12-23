@@ -7,9 +7,129 @@
 #define BLOCK_SIZE 64
 #define HALF_BLOCK_SIZE 32
 
-const int INF = ((1 << 30) - 1);
+using namespace std;
 
-__global__ void Phase_1(int *dist, int Round, int n) {
+const int INF = ((1 << 30) - 1);
+void input(char* infile);
+void output(char *outFileName);
+
+void block_FW();
+int ceil(int a, int b);
+__global__ void Phase1(int *dist, int Round, int n);
+__global__ void Phase2(int *dist, int Round, int n);
+__global__ void Phase3(int *dist, int Round, int n, int yOffset);
+
+int original_n, n, m;
+int* Dist = NULL;
+
+int main(int argc, char *argv[]){
+    input(argv[1]);
+	block_FW();
+	output(argv[2]);
+    cudaFreeHost(Dist);
+	return 0;
+}
+
+void input(char* infile) {
+    FILE* file = fopen(infile, "rb");
+    fread(&original_n, sizeof(int), 1, file);
+    fread(&m, sizeof(int), 1, file);
+
+    // make n % BLOCK_SIZE == 0
+    n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
+
+    Dist = (int*) malloc(sizeof(int)*n*n);
+
+    for (int i = 0; i < n; ++ i) {
+        for (int j = 0; j < n; ++ j) {
+            if (i == j) {
+                Dist[i*n+j] = 0;
+            } else {
+                Dist[i*n+j] = INF;
+            }
+        }
+    }
+
+    int pair[3];
+    for (int i = 0; i < m; ++ i) {
+        fread(pair, sizeof(int), 3, file);
+        Dist[pair[0]*n+pair[1]] = pair[2];
+    }
+    fclose(file);
+}
+
+void output(char *outFileName) {
+    FILE *outfile = fopen(outFileName, "w");
+	for (int i = 0; i < original_n; ++i) {
+		for (int j = 0; j < original_n; ++j) {
+            if (Dist[i*n+j] >= INF) Dist[i*n+j] = INF;
+        }
+		fwrite(&Dist[i*n], sizeof(int), original_n, outfile);
+	}
+    fclose(outfile);
+}
+
+int ceil(int a, int b) { return (a + b - 1) / b; }
+
+void block_FW() {
+    size_t matrixSize = n * n * sizeof(int);
+
+    cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
+
+    int *adj_mat_d[2];
+    const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	
+    // 2D block
+    dim3 block_dim(32, 32);
+
+    int round = ceil(n, BLOCK_SIZE);
+	#pragma omp parallel num_threads(2)
+	{
+		int thread_id = omp_get_thread_num();
+		cudaSetDevice(thread_id);
+
+        // Malloc memory
+        cudaMalloc(&adj_mat_d[thread_id], matrixSize);
+
+        // divide data
+		int round_per_thd = round / 2;
+		int y_offset = round_per_thd * thread_id;
+        if(thread_id == 1) round_per_thd += round % 2;
+
+		dim3 grid_dim(round, round_per_thd);
+		
+        size_t cp_amount = n * BLOCK_SIZE * round_per_thd * sizeof(int);
+        cudaMemcpy(adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * n, Dist + y_offset * BLOCK_SIZE * n, cp_amount, cudaMemcpyHostToDevice);
+
+        size_t block_row_sz = BLOCK_SIZE * n * sizeof(int);
+		for(int r = 0; r < round; r++) {
+
+            // Every thread has its own y_offset
+            if (r >= y_offset && r < (y_offset + round_per_thd)) {
+                cudaMemcpy(Dist + r * BLOCK_SIZE * n, adj_mat_d[thread_id] + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyDeviceToHost);
+            }
+
+            #pragma omp barrier
+            cudaMemcpy(adj_mat_d[thread_id] + r * BLOCK_SIZE * n, Dist + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyHostToDevice);
+
+            /* Phase 1*/
+            Phase1 <<<1, block_dim>>>(adj_mat_d[thread_id], r, n);
+
+            /* Phase 2*/
+            Phase2 <<<blocks, block_dim>>>(adj_mat_d[thread_id], r, n);
+
+            /* Phase 3*/
+            Phase3 <<<grid_dim, block_dim>>>(adj_mat_d[thread_id], r, n, y_offset);
+        }
+
+		cudaMemcpy(Dist + y_offset *BLOCK_SIZE * n, adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * n, block_row_sz * round_per_thd, cudaMemcpyDeviceToHost);
+		#pragma omp barrier
+    }
+    cudaFree(adj_mat_d[0]);
+    cudaFree(adj_mat_d[1]);
+}
+
+__global__ void Phase1(int *dist, int Round, int n) {
     const int innerI = threadIdx.y;
     const int innerJ = threadIdx.x;
     const int offset = BLOCK_SIZE * Round;
@@ -42,7 +162,7 @@ __global__ void Phase_1(int *dist, int Round, int n) {
 }
 
 
-__global__ void Phase_2(int *dist, int Round, int n) {
+__global__ void Phase2(int *dist, int Round, int n) {
     const int i = blockIdx.x; // "i" in n block in one row
     if (i == Round) return;
 
@@ -102,7 +222,7 @@ __global__ void Phase_2(int *dist, int Round, int n) {
     dist[Round*BLOCK_SIZE*n + i*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = B[innerI + HALF_BLOCK_SIZE][innerJ + HALF_BLOCK_SIZE];
 }
 
-__global__ void Phase_3(int *dist, int Round, int n, int yOffset) {
+__global__ void Phase3(int *dist, int Round, int n, int yOffset) {
     const int j = blockIdx.x;
     const int i = blockIdx.y + yOffset;
     if (i == Round && j == Round) return;
@@ -147,123 +267,4 @@ __global__ void Phase_3(int *dist, int Round, int n, int yOffset) {
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ] = C[innerI+HALF_BLOCK_SIZE][innerJ];
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + innerI*n + innerJ+HALF_BLOCK_SIZE] = C[innerI][innerJ+HALF_BLOCK_SIZE];
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
-}
-
-int original_n, n, m;
-int* Dist = NULL;
-
-void input(char* infile) {
-    FILE* file = fopen(infile, "rb");
-    fread(&original_n, sizeof(int), 1, file);
-    fread(&m, sizeof(int), 1, file);
-
-    // make n % BLOCK_SIZE == 0
-    n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
-
-    Dist = (int*) malloc(sizeof(int)*n*n);
-
-    for (int i = 0; i < n; ++ i) {
-        for (int j = 0; j < n; ++ j) {
-            if (i == j) {
-                Dist[i*n+j] = 0;
-            } else {
-                Dist[i*n+j] = INF;
-            }
-        }
-    }
-
-    int pair[3];
-    for (int i = 0; i < m; ++ i) {
-        fread(pair, sizeof(int), 3, file);
-        Dist[pair[0]*n+pair[1]] = pair[2];
-    }
-    fclose(file);
-
-}
-
-void output(char *outFileName) {
-    FILE *outfile = fopen(outFileName, "w");
-	for (int i = 0; i < original_n; ++i) {
-		for (int j = 0; j < original_n; ++j) {
-            if (Dist[i*n+j] >= INF) Dist[i*n+j] = INF;
-        }
-		fwrite(&Dist[i*n], sizeof(int), original_n, outfile);
-	}
-    fclose(outfile);
-}
-
-// int main(int argc, char* argv[]) {
-// 	input(argv[1]);
-// 	block_FW(BLOCK_SIZE);
-// 	output(argv[2]);
-//     cudaFreeHost(Dist);
-// 	return 0;
-// }
-
-int ceil(int a, int b) { return (a + b - 1) / b; }
-
-int main(int argc, char *argv[]){
-    input(argv[1]);
-
-    size_t matrixSize = n * n * sizeof(int);
-
-    cudaHostRegister(Dist, matrixSize, cudaHostRegisterDefault);
-
-    int *adj_mat_d[2];
-    const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-	
-    // 2D block
-    dim3 block_dim(32, 32);
-
-    int round = ceil(n, BLOCK_SIZE);
-	#pragma omp parallel num_threads(2)
-	{
-		int thread_id = omp_get_thread_num();
-		cudaSetDevice(thread_id);
-
-        // Malloc memory
-        cudaMalloc(&adj_mat_d[thread_id], matrixSize);
-
-        // divide data
-		int round_per_thd = round / 2;
-		int y_offset = round_per_thd * thread_id;
-        if(thread_id == 1) round_per_thd += round % 2;
-
-		dim3 grid_dim(round, round_per_thd);
-		
-        size_t cp_amount = n * BLOCK_SIZE * round_per_thd * sizeof(int);
-        cudaMemcpy(adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * n, Dist + y_offset * BLOCK_SIZE * n, cp_amount, cudaMemcpyHostToDevice);
-
-        size_t block_row_sz = BLOCK_SIZE * n * sizeof(int);
-		for(int r = 0; r < round; r++) {
-
-            // Every thread has its own y_offset
-            if (r >= y_offset && r < (y_offset + round_per_thd)) {
-                cudaMemcpy(Dist + r * BLOCK_SIZE * n, adj_mat_d[thread_id] + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyDeviceToHost);
-            }
-
-            #pragma omp barrier
-            cudaMemcpy(adj_mat_d[thread_id] + r * BLOCK_SIZE * n, Dist + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyHostToDevice);
-
-            /* Phase 1*/
-            Phase_1 <<<1, block_dim>>>(adj_mat_d[thread_id], r, n);
-
-            /* Phase 2*/
-            Phase_2 <<<blocks, block_dim>>>(adj_mat_d[thread_id], r, n);
-
-            /* Phase 3*/
-            Phase_3 <<<grid_dim, block_dim>>>(adj_mat_d[thread_id], r, n, y_offset);
-        }
-
-		cudaMemcpy(Dist + y_offset *BLOCK_SIZE * n, adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * n, block_row_sz * round_per_thd, cudaMemcpyDeviceToHost);
-		#pragma omp barrier
-	}
-	
-	output(argv[2]);
-
-	//free memory
-	cudaFree(adj_mat_d[0]);
-    cudaFree(adj_mat_d[1]);
-    cudaFreeHost(Dist);
-	return 0;
 }
