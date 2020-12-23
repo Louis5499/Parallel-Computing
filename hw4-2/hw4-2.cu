@@ -91,8 +91,10 @@ void block_FW() {
         cudaMalloc(&dst[cpuThreadId], matrixSize);
 
 		int roundPerThread = round / 2;
-        const int yOffset = roundPerThread * cpuThreadId;
+        const int yOffset = cpuThreadId == 0 ? 0 : roundPerThread;
         const size_t yOffsetSize = yOffset*BLOCK_SIZE*n;
+
+        // If num of blocks is uneven, we make the second GPU to add "1"
         if(cpuThreadId == 1) roundPerThread += round % 2;
 
 		dim3 grid_dim(round, roundPerThread);
