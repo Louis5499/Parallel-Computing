@@ -6,7 +6,8 @@
 #include <omp.h>
 #define BLOCK_SIZE 64
 #define HALF_BLOCK_SIZE 32
-#define inf 1e9
+
+const int INF = ((1 << 30) - 1);
 
 __global__ void Phase_1(int *dist, int Round, int n) {
     const int innerI = threadIdx.y;
@@ -148,101 +149,109 @@ __global__ void Phase_3(int *dist, int Round, int n, int yOffset) {
     dist[i*BLOCK_SIZE*n + j*BLOCK_SIZE + (innerI+HALF_BLOCK_SIZE)*n + innerJ+HALF_BLOCK_SIZE] = C[innerI+HALF_BLOCK_SIZE][innerJ+HALF_BLOCK_SIZE];
 }
 
-int main(int argc, char *argv[]){
-	/******************************* load data *********************************/
-    // only two arguments are allowed
-    assert(argc == 3);
+int original_n, n, m;
+int* Dist = NULL;
 
-    int E, V;
-    FILE *in_fp;
-    in_fp = fopen(argv[1], "r");
-    if(in_fp == NULL) printf("Failed on opening file\n");
-    // read in data
-    fread(&V, sizeof(int), 1, in_fp);
-    fread(&E, sizeof(int), 1, in_fp);
+void input(char* infile) {
+    FILE* file = fopen(infile, "rb");
+    fread(&original_n, sizeof(int), 1, file);
+    fread(&m, sizeof(int), 1, file);
 
-    // compensate V to make V % BLOCK_SIZE == 0
-	int comp_V = V + (BLOCK_SIZE - ((V-1) % BLOCK_SIZE + 1));
+    // make n % BLOCK_SIZE == 0
+    n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
 
-	//allocate memory
-    int *adj_mat; 
-    size_t sz = comp_V * comp_V * sizeof(int);
-	cudaMallocHost((void**) &adj_mat, sz);
-	for(int i = 0; i < comp_V; i++){
-        for(int j = 0; j < comp_V; j++){
-            if(i == j) adj_mat[i*comp_V+j] = 0;
-            else adj_mat[i*comp_V+j] = inf;
+    Dist = (int*) malloc(sizeof(int)*n*n);
+
+    for (int i = 0; i < n; ++ i) {
+        for (int j = 0; j < n; ++ j) {
+            if (i == j) {
+                Dist[i*n+j] = 0;
+            } else {
+                Dist[i*n+j] = INF;
+            }
         }
     }
-    // load data to graph
-    int src, dst, w;
-    while(E--){
-        fread(&src, sizeof(int), 1, in_fp);
-        fread(&dst, sizeof(int), 1, in_fp);
-        fread(&w, sizeof(int), 1, in_fp);
-        adj_mat[src*comp_V+dst] = w;
+
+    int pair[3];
+    for (int i = 0; i < m; ++ i) {
+        fread(pair, sizeof(int), 3, file);
+        Dist[pair[0]*n+pair[1]] = pair[2];
     }
-    fclose(in_fp);
-    /****************************************************************************/
+    fclose(file);
+
+}
+
+// int main(int argc, char* argv[]) {
+// 	input(argv[1]);
+// 	block_FW(BLOCK_SIZE);
+// 	output(argv[2]);
+//     cudaFreeHost(Dist);
+// 	return 0;
+// }
+
+int ceil(int a, int b) { return (a + b - 1) / b; }
+
+int main(int argc, char *argv[]){
+    input(argv[1]);
+
+    size_t matrixSize = n * n * sizeof(int);
 
     int *adj_mat_d[2];
-    int round =  ceil((float) comp_V/BLOCK_SIZE);
-    const int blocks = (comp_V + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    const int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
 	
     // 2D block
-    dim3 threads(32, 32);
-	dim3 p2(2, round-1);
+    dim3 block_dim(32, 32);
 
+    int round = ceil(n, BLOCK_SIZE);
 	#pragma omp parallel num_threads(2)
 	{
 		int thread_id = omp_get_thread_num();
 		cudaSetDevice(thread_id);
 
         // Malloc memory
-        cudaMalloc(&adj_mat_d[thread_id], sz);
+        cudaMalloc(&adj_mat_d[thread_id], matrixSize);
 
         // divide data
 		int round_per_thd = round / 2;
 		int y_offset = round_per_thd * thread_id;
         if(thread_id == 1) round_per_thd += round % 2;
 
-		dim3 p3(round, round_per_thd);
+		dim3 grid_dim(round, round_per_thd);
 		
-        size_t cp_amount = comp_V * BLOCK_SIZE * round_per_thd * sizeof(int);
-        cudaMemcpy(adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * comp_V, adj_mat + y_offset * BLOCK_SIZE * comp_V, cp_amount, cudaMemcpyHostToDevice);
+        size_t cp_amount = n * BLOCK_SIZE * round_per_thd * sizeof(int);
+        cudaMemcpy(adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * n, Dist + y_offset * BLOCK_SIZE * n, cp_amount, cudaMemcpyHostToDevice);
 
-        size_t block_row_sz = BLOCK_SIZE * comp_V * sizeof(int);
+        size_t block_row_sz = BLOCK_SIZE * n * sizeof(int);
 		for(int r = 0; r < round; r++) {
 
             // Every thread has its own y_offset
             if (r >= y_offset && r < (y_offset + round_per_thd)) {
-                cudaMemcpy(adj_mat + r * BLOCK_SIZE * comp_V, adj_mat_d[thread_id] + r * BLOCK_SIZE * comp_V, block_row_sz, cudaMemcpyDeviceToHost);
+                cudaMemcpy(Dist + r * BLOCK_SIZE * n, adj_mat_d[thread_id] + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyDeviceToHost);
             }
 
             #pragma omp barrier
-            cudaMemcpy(adj_mat_d[thread_id] + r * BLOCK_SIZE * comp_V, adj_mat + r * BLOCK_SIZE * comp_V, block_row_sz, cudaMemcpyHostToDevice);
+            cudaMemcpy(adj_mat_d[thread_id] + r * BLOCK_SIZE * n, Dist + r * BLOCK_SIZE * n, block_row_sz, cudaMemcpyHostToDevice);
 
-            Phase_1 <<<1, threads>>>(adj_mat_d[thread_id], r, comp_V);
-                
-            //cudaDeviceSynchronize();
+            /* Phase 1*/
+            Phase_1 <<<1, block_dim>>>(adj_mat_d[thread_id], r, n);
 
-            Phase_2 <<<blocks, threads>>>(adj_mat_d[thread_id], r, comp_V);
+            /* Phase 2*/
+            Phase_2 <<<blocks, block_dim>>>(adj_mat_d[thread_id], r, n);
 
-            //cudaDeviceSynchronize();
-
-            Phase_3 <<<p3, threads>>>(adj_mat_d[thread_id], r, comp_V, y_offset);
+            /* Phase 3*/
+            Phase_3 <<<grid_dim, block_dim>>>(adj_mat_d[thread_id], r, n, y_offset);
         }
 
-		cudaMemcpy(adj_mat + y_offset *BLOCK_SIZE * comp_V, adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * comp_V, block_row_sz * round_per_thd, cudaMemcpyDeviceToHost);
+		cudaMemcpy(Dist + y_offset *BLOCK_SIZE * n, adj_mat_d[thread_id] + y_offset *BLOCK_SIZE * n, block_row_sz * round_per_thd, cudaMemcpyDeviceToHost);
 		#pragma omp barrier
 	}
 	
 	// output
     FILE *out_fp;
     out_fp = fopen(argv[2], "wb");
-    for(int i = 0; i < V; i++){
-        for(int j = 0; j < V; j++){
-            fwrite(adj_mat+i*comp_V+j, sizeof(int), 1, out_fp);
+    for(int i = 0; i < original_n; i++){
+        for(int j = 0; j < original_n; j++){
+            fwrite(Dist+i*n+j, sizeof(int), 1, out_fp);
         }   
     }   
     fclose(out_fp);
@@ -250,6 +259,6 @@ int main(int argc, char *argv[]){
 	//free memory
 	cudaFree(adj_mat_d[0]);
     cudaFree(adj_mat_d[1]);
-    cudaFreeHost(adj_mat);
+    cudaFreeHost(Dist);
 	return 0;
 }
