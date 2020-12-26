@@ -22,10 +22,28 @@ __global__ void Phase3(int *dist, int Round, int n, int yOffset);
 int original_n, n, m;
 int* Dist = NULL;
 
+struct timespec start, timeEnd;
+double io_time=0.0;
+double timeDiff(struct timespec start, struct timespec timeEnd){
+    // function used to measure time in nano resolution
+    float output;
+    float nano = 1000000000.0;
+    if(timeEnd.tv_nsec < start.tv_nsec) output = ((timeEnd.tv_sec - start.tv_sec -1)+(nano+timeEnd.tv_nsec-start.tv_nsec)/nano);
+    else output = ((timeEnd.tv_sec - start.tv_sec)+(timeEnd.tv_nsec-start.tv_nsec)/nano);
+    return output;
+}
+
 int main(int argc, char *argv[]){
+    clock_gettime(CLOCK_MONOTONIC, &start); // S---------------------------------------------------------------------------------
     input(argv[1]);
-	block_FW();
-	output(argv[2]);
+    clock_gettime(CLOCK_MONOTONIC, &timeEnd); // E---------------------------------------------------------------------------------
+    io_time += timeDiff(start, timeEnd);
+    block_FW();
+    clock_gettime(CLOCK_MONOTONIC, &start); // S---------------------------------------------------------------------------------
+    output(argv[2]);
+    clock_gettime(CLOCK_MONOTONIC, &timeEnd); // E---------------------------------------------------------------------------------
+    io_time += timeDiff(start, timeEnd);
+    printf("io time: %f\n", io_time);
     cudaFreeHost(Dist);
 	return 0;
 }
@@ -37,6 +55,8 @@ void input(char* infile) {
 
     // make n % BLOCK_SIZE == 0
     n = original_n + (BLOCK_SIZE - (original_n%BLOCK_SIZE));
+
+    printf("original n: %d, n: %d \n", original_n, n);
 
     Dist = (int*) malloc(sizeof(int)*n*n);
 
@@ -92,27 +112,25 @@ void block_FW() {
 
 		int roundPerThread = round / 2;
         const int yOffset = cpuThreadId == 0 ? 0 : roundPerThread;
+        const size_t yOffsetSize = yOffset*BLOCK_SIZE*n;
 
         // If num of blocks is uneven, we make the second GPU to add "1"
-        if(cpuThreadId == 1 && (round % 2) == 1) roundPerThread += 1;
+        if(cpuThreadId == 1) roundPerThread += round % 2;
 
 		dim3 grid_dim(round, roundPerThread);
-
+        
         const size_t rowBlockSize = BLOCK_SIZE * n * sizeof(int);
         const size_t halfBlockSize = rowBlockSize * roundPerThread;
-        const size_t yOffsetSize = yOffset*BLOCK_SIZE*n;
         cudaMemcpy(dst[cpuThreadId] + yOffsetSize, Dist + yOffsetSize, halfBlockSize, cudaMemcpyHostToDevice);
 
 		for(int r = 0; r < round; r++) {
-            const size_t roundBlockOffset = r * BLOCK_SIZE * n;
             // Every thread has its own yOffset
-            const int isInSelfRange = (r >= yOffset) && (r < (yOffset + roundPerThread));
-            if (isInSelfRange) {
-                cudaMemcpy(Dist + roundBlockOffset, dst[cpuThreadId] + roundBlockOffset, rowBlockSize, cudaMemcpyDeviceToHost);
+            if (r >= yOffset && r < (yOffset + roundPerThread)) {
+                cudaMemcpy(Dist + r * BLOCK_SIZE * n, dst[cpuThreadId] + r * BLOCK_SIZE * n, rowBlockSize, cudaMemcpyDeviceToHost);
             }
             #pragma omp barrier
 
-            cudaMemcpy(dst[cpuThreadId] + roundBlockOffset, Dist + roundBlockOffset, rowBlockSize, cudaMemcpyHostToDevice);
+            cudaMemcpy(dst[cpuThreadId] + r * BLOCK_SIZE * n, Dist + r * BLOCK_SIZE * n, rowBlockSize, cudaMemcpyHostToDevice);
 
             /* Phase 1*/
             Phase1 <<<1, block_dim>>>(dst[cpuThreadId], r, n);
