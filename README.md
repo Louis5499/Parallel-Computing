@@ -9,7 +9,6 @@ The specific details of each homeworks (Homework Spec, My Report), please refer 
 Homework List:
 1. HW1: [MPI] Odd-Even Sort
   - If you wants to enhance the performance, please rewrite the logic by `C++` and call the `C++ native libraries`(STL, ...), you will get greater performance than `C`.
-  - There're some optimization methods you could try, which is mentioned in the `HW1_Optimization.pdf` file.
 
 2. HW2: [MPI+OpenMP+Vectorization] Mandelbrot Set
   - My code is ranking top 3.
@@ -23,5 +22,5 @@ Homework List:
 4. HW4: [Cuda] All-Pairs Shortest Path (One GPU or Multiple GPUs)
   - My code is ranking top 3.
 
-There are also 5 labs and how I implemented for your reference.
+There are also 5 labs for your reference.
 
